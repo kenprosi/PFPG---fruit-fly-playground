@@ -1,0 +1,14 @@
+# Third-party annotation table, only needed to rebuild the brain (download it again from
+# github.com/flyconnectome/flywire_annotations, see tools/build_brain.py)
+data/flywire_annotations.tsv
+
+# Python
+__pycache__/
+*.pyc
+
+# OS and editor clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

@@ -73,3 +73,7 @@ To be clear about it:
 - Shiu, P. K. et al. *A Drosophila computational brain model reveals sensorimotor processing.* Nature 634 (2024) — neuron model parameters.
 - Aso, Y. et al. (2014) on MBON/dopamine roles; Stensmyr et al. (2012) geosmin → DA2; Suh et al. (2004) CO2 → V; Card & Dickinson (2008), Zacarias et al. (2018), Gibson et al. (2015) on escape, freezing and fear-like states.
 - The FlyBrain project (MIT) — the original worker simulation and the downloaded data.
+
+## License
+
+The code is under the MIT License (see `LICENSE`). The brain data in `data/` is built from the FlyWire connectome and its cell type annotations, and stays under their own terms: credit FlyWire (Dorkenwald et al. 2024; Schlegel et al. 2024) when you use or share it. `data/flywire_annotations.tsv` isn't included; `tools/build_brain.py` says where to get it.
