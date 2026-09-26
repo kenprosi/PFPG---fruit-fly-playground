@@ -1,0 +1,208 @@
+<meta charset="utf-8">
+<title>Ragdoll Playground</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --ink: #000000;
+    --muted: #6b6b6b;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #c {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: default;
+  }
+  .hud {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    left: 16px; right: 16px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    pointer-events: none;
+  }
+  .brand {
+    font-weight: 600; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase;
+    padding: 8px 0; margin-right: 8px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .brand small { font-weight: 400; font-size: 12px; letter-spacing: 0.02em; color: var(--muted); text-transform: none; font-variant-numeric: tabular-nums; }
+  .menu {
+    position: fixed; z-index: 10;
+    min-width: 232px; max-width: calc(100vw - 32px);
+    background: var(--bg); color: var(--ink);
+    border: 1px solid var(--ink);
+    box-shadow: 4px 4px 0 var(--ink);
+    padding-block: 4px;
+    font: 500 13px/1.2 "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .menu .head {
+    padding: 6px 14px 8px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--ink);
+    font-size: 12px; font-weight: 400; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .menu hr { border: 0; border-top: 1px solid var(--ink); margin: 4px 0; }
+  .menu button {
+    display: flex; justify-content: space-between; gap: 16px;
+    width: 100%; text-align: left;
+    font: inherit; color: inherit;
+    background: none; border: 0; border-radius: 0;
+    padding: 8px 14px; cursor: pointer;
+  }
+  .menu button:hover, .menu button:focus-visible { background: var(--ink); color: var(--bg); outline: none; }
+  .menu button .state { color: var(--muted); }
+  .menu button:hover .state, .menu button:focus-visible .state { color: var(--bg); }
+  .hint {
+    position: fixed;
+    left: 16px; right: 16px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    text-align: center;
+    font-size: 12px;
+    color: #ffffff;
+    pointer-events: none;
+  }
+  .panel {
+    position: fixed; z-index: 5;
+    top: calc(env(safe-area-inset-top, 0px) + 52px); right: 16px;
+    width: min(340px, calc(100vw - 32px)); max-height: calc(100% - 140px); overflow: auto;
+    background: var(--bg); color: var(--ink);
+    border: 1px solid var(--ink); box-shadow: 4px 4px 0 var(--ink);
+    font: 400 12px/1.35 "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .panel header {
+    position: sticky; top: 0; background: var(--bg);
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--ink);
+    font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; font-size: 12px;
+  }
+  .panel header button {
+    font: inherit; letter-spacing: 0; text-transform: none; background: none; color: var(--ink);
+    border: 1px solid var(--ink); border-radius: 0; padding: 2px 8px; cursor: pointer;
+  }
+  .panel header button:hover, .panel header button:focus-visible { background: var(--ink); color: var(--bg); outline: none; }
+  .bp-body { padding: 4px 12px 12px; }
+  .hud-btn {
+    pointer-events: auto;
+    font: 500 12px/1 "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: var(--ink); background: var(--bg); border: 1px solid var(--ink); border-radius: 0;
+    padding: 7px 12px; cursor: pointer;
+  }
+  .hud-btn:hover, .hud-btn:focus-visible, .hud-btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); outline: none; }
+  .props-panel { left: 16px; right: auto; width: min(260px, calc(100vw - 32px)); }
+  .pp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 12px 4px; }
+  .pp-tile {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--ink); border-radius: 0;
+    padding: 6px 4px 8px; cursor: grab; touch-action: none;
+  }
+  .pp-tile:hover, .pp-tile:focus-visible { background: #eee; outline: none; }
+  .pp-tile:active { cursor: grabbing; }
+  .pp-tile canvas { width: 100%; height: auto; display: block; }
+  .pp-note { margin: 4px 12px 12px; color: var(--muted); font-size: 11px; }
+  .bp-status { margin: 8px 0; }
+  .bp-mode { margin: 8px 0 4px; }
+  .bp-mode span { color: var(--muted); }
+  .bp-sec { border-top: 1px solid #d8d8d8; padding-top: 6px; margin-top: 8px; }
+  .bp-sec h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .bp-row { display: grid; grid-template-columns: 1fr 72px 48px; gap: 8px; align-items: center; padding: 1px 0; }
+  .bp-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bp-bar { display: block; height: 7px; border: 1px solid var(--ink); }
+  .bp-bar > span { display: block; height: 100%; background: var(--ink); }
+  .bp-bar > span.red { background: #c8102e; }
+  .bp-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .bp-word { font-weight: 600; }
+  .bp-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+  .bp-strip { display: block; width: 100%; height: auto; }
+  .bp-btn {
+    font: inherit; background: none; color: var(--ink); border: 1px solid var(--ink); border-radius: 0;
+    padding: 6px 10px; cursor: pointer; margin-top: 10px;
+  }
+  .bp-btn:hover, .bp-btn:focus-visible { background: var(--ink); color: var(--bg); outline: none; }
+  .b3 {
+    position: fixed; inset: 0; z-index: 20; background: var(--bg); color: var(--ink);
+    display: grid; grid-template-columns: 1fr 300px;
+    font: 400 12px/1.35 "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .b3[hidden] { display: none; }
+  .b3-stage { position: relative; overflow: hidden; min-height: 0; }
+  .b3-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  .b3-stage canvas:active { cursor: grabbing; }
+  .b3-title { position: absolute; top: 12px; left: 16px; pointer-events: none; }
+  .b3-title b { font-weight: 600; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .b3-title span { display: block; color: var(--muted); margin-top: 2px; }
+  .b3-status { position: absolute; left: 0; right: 0; top: 50%; text-align: center; pointer-events: none; padding: 0 16px; }
+  .b3-label {
+    position: absolute; left: 0; top: 0; pointer-events: none; white-space: nowrap;
+    font-size: 11px; font-weight: 600; padding: 1px 5px; background: rgba(255,255,255,0.82); border: 1px solid var(--ink);
+  }
+  .b3-side { border-left: 1px solid var(--ink); display: flex; flex-direction: column; min-height: 0; }
+  .b3-side header {
+    display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--ink);
+    font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .b3-side header button { font: inherit; letter-spacing: 0; text-transform: none; background: none; color: var(--ink); border: 1px solid var(--ink); border-radius: 0; padding: 2px 8px; cursor: pointer; }
+  .b3-side header button:hover, .b3-side header button:focus-visible { background: var(--ink); color: var(--bg); outline: none; }
+  .b3-parts { overflow: auto; padding: 4px 0; }
+  .b3-parts button {
+    display: flex; justify-content: space-between; gap: 8px; width: 100%; text-align: left;
+    font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 7px 12px; cursor: pointer;
+  }
+  .b3-parts button:hover, .b3-parts button:focus-visible { background: #eee; outline: none; }
+  .b3-parts button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .b3-sw { display: inline-block; width: 9px; height: 9px; margin-right: 8px; vertical-align: -1px; }
+  .b3-num { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .b3-parts button[aria-pressed="true"] .b3-num { color: var(--bg); }
+  .b3-note { margin: 0; padding: 10px 12px; border-top: 1px solid var(--ink); color: var(--muted); }
+  @media (max-width: 700px) {
+    .b3 { grid-template-columns: 1fr; grid-template-rows: 1fr 42%; }
+    .b3-side { border-left: 0; border-top: 1px solid var(--ink); }
+  }
+</style>
+
+<canvas id="c" aria-label="Playground: drag and throw the ragdoll people"></canvas>
+
+<div class="hud">
+  <div class="brand">Playground <small id="count">0 people</small></div>
+  <button type="button" class="hud-btn" id="propsBtn" aria-pressed="false">Items</button>
+</div>
+<div class="hint" id="hint">Right-click: add people, food, a fly brain · Items: drag things onto the field · A / D: turn what you hold</div>
+<div class="menu" id="menu" role="menu" aria-label="Options" hidden></div>
+<aside class="panel props-panel" id="propsPanel" aria-label="Items" hidden>
+  <header>Items <button type="button" data-close>Close</button></header>
+  <div class="pp-grid"></div>
+  <p class="pp-note">Drag one onto the field and let go. Hold A / D to turn it anticlockwise / clockwise about where you hold it.</p>
+</aside>
+<aside class="panel" id="brainPanel" aria-label="Fly brain" hidden>
+  <header>Fly brain <button type="button" data-close>Close</button></header>
+  <div class="bp-body"></div>
+</aside>
+
+<section class="b3" id="brain3d" aria-label="3D fly brain model" hidden>
+  <div class="b3-stage">
+    <canvas aria-label="3D fly brain: drag to turn, scroll to zoom"></canvas>
+    <div class="b3-title"><b>Fruit fly brain</b><span>drag to turn · scroll to zoom</span></div>
+    <p class="b3-status"></p>
+  </div>
+  <div class="b3-side">
+    <header>Parts <button type="button" data-close>Close</button></header>
+    <div class="b3-parts"></div>
+    <p class="b3-note"></p>
+  </div>
+</section>
+
+<script src="js/brain.js?v=10"></script>
+<script>FlyBrain.version = 10;</script>
+<script src="js/brain3d.js?v=10"></script>
+<script src="js/game.js?v=18"></script>
