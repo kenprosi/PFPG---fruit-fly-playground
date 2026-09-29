@@ -70,7 +70,8 @@
     const pts = [], bones = [], bonds = [];
     const addPt = (rx, ry, r, bone, anchor) => {
       const X = x + rx * dir * S, Y = feetY + ry * S;
-      pts.push({ x: X, y: Y, px: X, py: Y, r: r * S, bone, anchor, wound: 0, torn: false, stain: 0, hurt: 0, comp: 0, bonds: [], ivx: 0, ivy: 0, contact: false });
+      pts.push({ x: X, y: Y, px: X, py: Y, r: r * S, bone, anchor, wound: 0, torn: false, stain: 0, hurt: 0, fire: 0, burn: 0, frost: 0,
+        comp: 0, bonds: [], ivx: 0, ivy: 0, contact: false });
       return pts.length - 1;
     };
     const addBond = (a, b, kind, tear, dmg, extra) => {
@@ -348,7 +349,7 @@
         const vx = t.grown ? t.vx : q.x - q.px, vy = t.grown ? t.vy : q.y - q.py;
         [q.x, q.y] = planPoint(person, T, i);
         q.px = q.x - vx; q.py = q.y - vy;
-        q.wound = 0; q.torn = false; q.stain = 0; q.hurt = 0; q.soft = 0; q.contact = false;
+        q.wound = 0; q.torn = false; q.stain = 0; q.hurt = 0; q.soft = 0; q.contact = false; q.fire = 0; q.burn = 0; q.frost = 0;
         if (q.regrow) squashed = true;
       }
       bone.intact = true;
@@ -377,7 +378,7 @@
     const sx = left > 0 ? left : -right;
     if (up > 0 || sx) for (const q of P) { q.y -= up; q.py -= up; q.x += sx; q.px += sx; }
     if (held && held.person === person && T[P[held.idx].bone].grown) held = null;
-    Object.assign(person, { blood: 100, dead: false, ko: 0, nBroken: 0, dented: false, dirty: true, regenT: 0 });
+    Object.assign(person, { blood: 100, dead: false, ko: 0, nBroken: 0, dented: false, dirty: true, regenT: 0, poison: 0, frozen: false, burning: 0 });
     updateCount();
   }
 
@@ -633,7 +634,7 @@
     // a hard enough hit lets the bone dent where it landed, for a few substeps
     if (speed > 1000 * S) q.soft = Math.max(q.soft || 0, Math.min(1, (speed - 1000 * S) / (1800 * S)));
     // hard hits crush the flesh around the point of impact, and a little beyond it
-    const excess = speed - 1500 * S;
+    const excess = speed - (q.frost > 0.5 ? 650 : 1500) * S;
     if (excess > 0) {
       const d = Math.min(2.2, excess / (1100 * S));
       for (const bi of q.bonds) {
@@ -648,6 +649,13 @@
   function damage(person, bi, d) {
     const b = person.bonds[bi];
     if (b.broken || b.kind === 'anchor') return;
+    // frozen flesh is brittle as glass: it shatters, and ignores the grain of the lumps
+    const P = person.pts;
+    if (b.kind === 'in' && P[b.a].frost > 0.5 && P[b.b].frost > 0.5) {
+      b.hp -= d * 1.1;
+      if (b.hp <= 0) breakBond(person, bi);
+      return;
+    }
     b.hp -= d * b.dmg;
     if (b.hp <= 0) breakBond(person, bi);
   }
@@ -684,9 +692,9 @@
   }
   let crackDepth = 0;
 
-  function spray(x, y, vx, vy, n) {
+  function spray(x, y, vx, vy, n, c) {
     for (let i = 0; i < n && drops.length < 1600; i++) {
-      drops.push({ x, y, vx: vx + (Math.random() - 0.5) * 380 * S, vy: vy - Math.random() * 320 * S, s: (0.8 + Math.random() * 1.2) * S });
+      drops.push({ x, y, vx: vx + (Math.random() - 0.5) * 380 * S, vy: vy - Math.random() * 320 * S, s: (0.8 + Math.random() * 1.2) * S, c });
     }
   }
 
@@ -737,7 +745,7 @@
       }
       // balance controller
       const c = person.ctrl, B = person.bones;
-      if (c > 0 && person.grounded && person.legsOk && !person.dead && !(held && held.person === person)) {
+      if (c > 0 && person.grounded && person.legsOk && !person.dead && (!person.frozen || person.statue) && !(held && held.person === person)) {
         const standing = person.standing;
         // a standing person keeps their balance over the spot where they stood up, so they don't wander
         if (standing && person.walkV) person.standX = Math.max(30 * S, Math.min(W - 30 * S, person.standX + person.walkV * h));
@@ -902,8 +910,19 @@
     }
   }
 
+  // Frozen solid: every joint is held at the angle it froze at, firmly but the way muscles
+  // hold a pose (a hard lock fought the collisions and shook the body apart)
+  function holdFrozen(person) {
+    for (const j of person.joints) {
+      if (!j.active || j.lock === undefined || j.lock === null) continue;
+      const rel = rawAngle(person, j, false), spin = wrap(rel - rawAngle(person, j, true));
+      twist(person, j, wrap(rel - j.lock) * 0.5 + spin * 0.5, 0.02, true);
+    }
+  }
+
   // muscles: a damped angular spring toward the standing pose, once per substep
   function muscles(person) {
+    if (person.frozen) { holdFrozen(person); return; }
     if (person.ko > 0 || person.dead) return;
     const heldHere = held && held.person === person;
     // full strength only to hold a standing pose; held they go nearly limp, lying or getting up
@@ -1158,6 +1177,7 @@
           q.stain = Math.min(1, q.stain + 0.08);
         }
       }
+      updateBurnFrostPoison(person, dt, floor);
       if (person.immortal && person.dead) { person.dead = false; changed = true; }
       if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0)) {
         person.dead = true; changed = true;
@@ -1201,7 +1221,15 @@
         else person.ctrl = 0;
         if (person.fallT > 9) person.fallT = 0.5; // give up this try, rest a bit
       }
+      // frozen stiff: no control at all; badly poisoned: too weak to stand
+      if (person.frozen) {
+        // a statue stays up until something knocks it over (or tips it well off balance)
+        if (person.statue && (person.ko > 0 || up < 0.75 || heldHere)) person.statue = false;
+        person.ctrl = person.statue ? 1 : 0; person.standing = !!person.statue; person.fallT = 0; person.walkV = 0;
+      }
+      else if (person.poison > 0.45) person.ctrl = Math.min(person.ctrl, Math.max(0, 1.9 - person.poison * 2.2));
     }
+    updateEnvironment(dt);
     if (changed) updateCount();
     updateMinds(dt);
     updatePanel(dt);
@@ -1218,7 +1246,7 @@
       d.vy += 1700 * S * dt;
       d.x += d.vx * dt; d.y += d.vy * dt;
       if (d.y >= G) {
-        stains.push({ x: d.x, w: d.s * (1.5 + Math.random() * 2.5) });
+        stains.push({ x: d.x, w: d.s * (1.5 + Math.random() * 2.5), c: d.c });
         if (stains.length > 900) stains.shift();
         drops.splice(i, 1);
       } else if (d.x < 0 || d.x > W) drops.splice(i, 1);
@@ -1263,6 +1291,9 @@
       if (q.anchor || q.ghost) continue;
       // soft patches that fade out, so neighbouring ones run together into one bruise
       if (q.hurt > 0.06) blot(q.x, q.y, 12 * S, hurtColor(q.hurt), Math.min(1, q.hurt * 2) * 0.9);
+      if (q.burn > 0.04) blot(q.x, q.y, 10 * S, [28, 22, 18], Math.min(0.92, q.burn));
+      if (q.frost > 0.04) blot(q.x, q.y, 10 * S, [165, 212, 240], Math.min(0.8, q.frost * 0.9));
+      if (person.poison > 0.05) blot(q.x, q.y, 10 * S, [96, 150, 70], Math.min(0.5, person.poison * 0.55));
       if (q.fresh > 0.02) blot(q.x, q.y, 11 * S, [200, 16, 46], q.fresh * 0.85);
       if (q.stain > 0.05) blot(q.x, q.y, 8 * S, [200, 16, 46], Math.min(1, q.stain) * 0.8);
     }
@@ -1329,6 +1360,23 @@
     }
   }
 
+  // flames licking up from every burning particle, a fresh shape each frame so they flicker
+  function drawFlames(person) {
+    const P = person.pts;
+    for (let i = 0; i < P.length; i += 2) {
+      const q = P[i];
+      if (q.anchor || q.ghost || q.fire < 0.05) continue;
+      const hgt = (7 + Math.random() * 9) * S * Math.min(1, q.fire + 0.2), w = (2.5 + Math.random() * 1.5) * S;
+      ctx.globalAlpha = Math.min(0.9, q.fire + 0.2);
+      ctx.fillStyle = '#ff7a1a';
+      ctx.beginPath(); ctx.moveTo(q.x - w, q.y); ctx.quadraticCurveTo(q.x - w * 0.4, q.y - hgt * 0.6, q.x + (Math.random() - 0.5) * 2 * S, q.y - hgt);
+      ctx.quadraticCurveTo(q.x + w * 0.4, q.y - hgt * 0.6, q.x + w, q.y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath(); ctx.moveTo(q.x - w * 0.45, q.y); ctx.lineTo(q.x, q.y - hgt * 0.55); ctx.lineTo(q.x + w * 0.45, q.y); ctx.closePath(); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   function drawPerson(person) {
     // chest and belly are one torso while the waist holds
     const torso = !person.bonds[person.joints[WAIST].bond].broken;
@@ -1337,6 +1385,7 @@
       const list = (torso && bi === BELLY ? [BELLY, CHEST] : [bi]).filter(b => !person.bones[b].ghost);
       if (list.length) drawBones(person, list);
     }
+    if (person.burning > 0) drawFlames(person);
     if (person.reform) {
       // round drops about as big as the particles they were, so a clot reads as one mass, with
       // a short fading trail behind
@@ -1371,7 +1420,7 @@
       if (i % 5 === 0 && i > 0) ctx.fillText(i + ' m', x + 4, G + 6);
     }
     ctx.fillStyle = BLOOD;
-    for (const s of stains) ctx.fillRect(s.x - s.w / 2, G - 1.5 * S, s.w, 3 * S);
+    for (const s of stains) { ctx.fillStyle = s.c || BLOOD; ctx.fillRect(s.x - s.w / 2, G - 1.5 * S, s.w, 3 * S); }
   }
 
   function draw() {
@@ -1389,7 +1438,7 @@
     drawProps();
     drawBlasts();
     ctx.fillStyle = BLOOD;
-    for (const d of drops) ctx.fillRect(d.x - d.s / 2, d.y - d.s / 2, d.s, d.s);
+    for (const d of drops) { ctx.fillStyle = d.c || BLOOD; ctx.fillRect(d.x - d.s / 2, d.y - d.s / 2, d.s, d.s); }
     drawMindLabels();
     if (held) {
       const q = held.person.pts[held.idx];
@@ -1448,6 +1497,23 @@
     bomb: { name: 'Bomb', fuse: 3, parts: [
       { a: [0, 0], b: [0, 0], r: 8, m: 4, kind: 'blunt', bomb: true },
     ] },
+    torch: { name: 'Torch', parts: [
+      { a: [-26, 0], b: [10, 0], r: 2.3, m: 2, kind: 'grip' },
+      { a: [10, 0], b: [17, 0], r: 3.6, m: 0.8, kind: 'blunt', flame: true },
+    ] },
+    poison: { name: 'Poison flask', shatter: 'poison', parts: [
+      { a: [-7, 0], b: [4, 0], r: 5.5, m: 1.2, kind: 'blunt', glass: '#6f9f4f' },
+      { a: [4, 0], b: [11, 0], r: 2, m: 0.3, kind: 'blunt', glass: '#6f9f4f' },
+    ] },
+    nitrogen: { name: 'Liquid nitrogen', shatter: 'cold', parts: [
+      { a: [-7, 0], b: [4, 0], r: 5.5, m: 1.2, kind: 'blunt', glass: '#9fd0ee' },
+      { a: [4, 0], b: [11, 0], r: 2, m: 0.3, kind: 'blunt', glass: '#9fd0ee' },
+    ] },
+    fridge: { name: 'Fridge', fixed: true, parts: [
+      { box: [-43, -92, 4, 92], m: 1, kind: 'blunt' },
+      { box: [0, -187, 47, 5], m: 1, kind: 'blunt' },
+      { box: [43, -92, 4, 92], m: 1, kind: 'blunt', door: true },
+    ] },
     press: { name: 'Press', fixed: true, parts: [
       { box: [-52, -92, 5, 92], m: 1, kind: 'blunt', metal: true },
       { box: [52, -92, 5, 92], m: 1, kind: 'blunt', metal: true },
@@ -1479,13 +1545,15 @@
       const onLine = !!def.pierce && !p.box && p.a[1] === 0 && p.b[1] === 0 &&
         Math.min(p.a[0], p.b[0]) >= def.pierce[0] - 0.01 && Math.max(p.a[0], p.b[0]) <= def.pierce[1] + 0.01;
       return { a, b, r, hw, hh, box: !!p.box, kind: p.kind, tip: !!p.tip, sharp: p.sharp || 1, onLine,
-        metal: !!p.metal, bomb: !!p.bomb, plate: !!p.plate, rod: !!p.rod, vel: null,
+        metal: !!p.metal, bomb: !!p.bomb, plate: !!p.plate, rod: !!p.rod, flame: !!p.flame, glass: p.glass || null,
+        door: !!p.door, off: false, vel: null,
         wa: [0, 0], wb: [0, 0], wc: p.box ? [[0, 0], [0, 0], [0, 0], [0, 0]] : null };
     });
     const pierce = def.pierce && { x0: (def.pierce[0] - cx) * S, x1: (def.pierce[1] - cx) * S, y: -cy * S,
       r: Math.max(...parts.filter(p => p.onLine).map(p => p.r)) };
     const pr = { kind, parts, m: M, I: I + M * S * S, R, x, y, a: a || 0, vx: 0, vy: 0, w: 0, blood: 0, pierce, skew: [], ghost: false,
-      fixed: !!def.fixed, fuse: def.fuse };
+      fixed: !!def.fixed, fuse: def.fuse, shatter: def.shatter };
+    if (kind === 'fridge') { pr.door = parts.findIndex(p => p.door); parts[pr.door].off = true; }   // starts open
     if (kind === 'press') {
       const plate = parts.findIndex(p => p.plate), rod = parts.findIndex(p => p.rod);
       pr.press = { on: true, phase: 'rest', t: 1, plate, rod, y: parts[plate].a[1], top: parts[plate].a[1], bottom: -17 * S };
@@ -1520,6 +1588,7 @@
   // Where a circle at (x, y) of radius rad touches a part: the contact point on the prop, the
   // normal from the prop out toward the circle, and how deep they overlap (null if they don't).
   function surface(pr, p, x, y, rad) {
+    if (p.off) return null;
     if (!p.box) {
       const [cx, cy] = closestOnSeg(x, y, p.wa, p.wb);
       const dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy, rr = p.r + rad;
@@ -1572,6 +1641,7 @@
   // every substep, after the bodies have moved
   function stepProps(h) {
     const g = GRAV();
+    for (const pr of props) { pr.pvx = pr.vx; pr.pvy = pr.vy + g * h; pr.knock = 0; }
     for (const pr of props) {
       if (pr.ghost) continue;
       if (pr.fixed) { if (pr.press) runPress(pr, h); }
@@ -1597,6 +1667,122 @@
       cutWithProp(pr, h);
       propVsWorld(pr);
       propWorld(pr);
+    }
+    // glass: a hard knock (a sudden change of speed) breaks it
+    for (const pr of props.slice()) {
+      if (!pr.shatter || pr.ghost || isHeldProp(pr)) continue;
+      if (pr.knock > 330 * S || Math.hypot(pr.vx - pr.pvx, pr.vy - pr.pvy) > 380 * S) shatterFlask(pr);
+    }
+  }
+
+  function shatterFlask(pr) {
+    props.splice(props.indexOf(pr), 1);
+    const cold = pr.shatter === 'cold', R = (cold ? 95 : 55) * S;
+    spray(pr.x, pr.y, pr.vx * 0.2, -150 * S, 10, cold ? '#bfe3f7' : '#6f9f4f');
+    for (let k = 0; k < 6; k++) dust.push({ x: pr.x, y: pr.y, vx: (Math.random() - 0.5) * 300 * S, vy: -Math.random() * 200 * S, life: 1, s: (1.5 + Math.random() * 2) * S });
+    if (cold) blasts.push({ x: pr.x, y: pr.y, t: 0, R, cold: true });
+    for (const person of people) {
+      const P = person.pts;
+      let most = 0;
+      for (const q of P) {
+        if (q.anchor || q.ghost) continue;
+        const d = Math.hypot(q.x - pr.x, q.y - pr.y);
+        if (d > R) continue;
+        const f = 1 - d / R;
+        most = Math.max(most, f);
+        if (cold) { q.frost = Math.min(1, Math.max(q.frost, 0.5 + f)); q.fire = 0; }
+      }
+      if (!cold && most > 0) person.poison = Math.min(1.3, (person.poison || 0) + 0.25 + most * 0.8);
+      if (most > 0 && person.mind) person.mind.fear = Math.min(1, person.mind.fear + 0.3);
+    }
+  }
+
+  // Fire and cold that come from things in the world: a torch sets alight whatever its flame
+  // touches (and lights bomb fuses); inside a fridge, bodies slowly freeze, fast with the door shut.
+  function updateEnvironment(dt) {
+    for (const pr of props) {
+      if (pr.ghost) continue;
+      for (const p of pr.parts) {
+        if (!p.flame) continue;
+        const fx = p.wb[0], fy = p.wb[1], reach = 9 * S;
+        for (const person of people) for (const q of person.pts) {
+          if (q.anchor || q.ghost) continue;
+          if (Math.hypot(q.x - fx, q.y - fy) > reach + q.r) continue;
+          if (q.frost > 0.1) q.frost = Math.max(0, q.frost - dt * 1.5);
+          else q.fire = Math.max(q.fire, 0.9);
+        }
+        for (const o of props) if (o.fuse !== undefined && o !== pr && Math.hypot(o.x - fx, o.y - fy) < reach + 10 * S) o.fuse = Math.min(o.fuse, 0.6);
+      }
+      if (pr.kind === 'fridge') {
+        const shut = !pr.parts[pr.door].off, x0 = pr.x - 39 * S, x1 = pr.x + 39 * S, y0 = pr.y - 182 * S;
+        for (const person of people) for (const q of person.pts) {
+          if (q.anchor || q.ghost || q.x < x0 || q.x > x1 || q.y < y0 || q.y > pr.y) continue;
+          q.fire = 0;
+          q.frost = Math.min(1, q.frost + dt * (shut ? 0.2 : 0.035));
+        }
+      }
+    }
+  }
+
+  function spreadFire(q) {
+    let pick = null, n = 0;
+    for (const person of people) for (const o of person.pts) {
+      if (o === q || o.anchor || o.ghost || o.fire > 0.5 || o.burn > 0.95 || o.frost > 0.3) continue;
+      const dx = o.x - q.x, dy = o.y - q.y;
+      if (Math.abs(dx) > 8 * S || dy > 5 * S || dy < -12 * S) continue;     // reaches further up than down
+      if (Math.random() * ++n < 1) pick = o;
+    }
+    if (pick) pick.fire = 0.9;
+  }
+
+  // Burning spreads from particle to particle, chars the skin black, weakens
+  // it, and costs blood and hurts; frost thaws slowly; a body mostly frozen is frozen solid;
+  // poison drains blood, makes the body shake and turn a sickly colour, and weakens it.
+  function updateBurnFrostPoison(person, dt, floor) {
+    const P = person.pts;
+    let burning = 0, frost = 0, n = 0, hot = -1;
+    for (let i = 0; i < P.length; i++) {
+      const q = P[i];
+      if (q.anchor || q.ghost) continue;
+      n++;
+      if (q.fire > 0) {
+        burning++; hot = i;
+        q.burn = Math.min(1, q.burn + dt * 0.3 * q.fire);
+        q.frost = 0;
+        for (const bi of q.bonds) {
+          const b = person.bonds[bi];
+          if (b.broken || b.kind !== 'in') continue;
+          b.hp -= dt * 0.008 * q.fire;
+          if (b.hp <= 0) breakBond(person, bi);
+        }
+        // now and then it catches something close by: across joints, onto someone standing
+        // next to it, and more readily upward, since flames climb
+        if (Math.random() < dt * 2.2 * q.fire) spreadFire(q);
+        q.fire = Math.max(0, q.fire - dt * (q.burn > 0.9 ? 0.45 : 0.14));
+        if (Math.random() < dt * 1.5 * q.fire) dust.push({ x: q.x, y: q.y - 6 * S, vx: (Math.random() - 0.5) * 30 * S, vy: -60 * S, life: 1, s: (2 + Math.random() * 3) * S });
+      }
+      if (q.frost > 0) { frost += q.frost; q.frost = Math.max(0, q.frost - dt * 0.035); }
+    }
+    person.burning = n ? burning / n : 0;
+    if (burning) {
+      person.blood = Math.max(floor, person.blood - dt * 11 * person.burning);
+      if (person.mind && Math.random() < dt * 5) feel(person, hot, 700 * S + 1500 * S * person.burning, P[hot].x);
+    }
+    const was = person.frozen;
+    person.frozen = n > 0 && frost / n > 0.55;
+    // freezing locks every joint at the angle it has now
+    if (person.frozen && !was) {
+      for (const j of person.joints) j.lock = j.active ? rawAngle(person, j, false) : null;
+      person.statue = person.standing;          // frozen on its feet, it stays up like a statue
+    }
+    if (person.poison > 0) {
+      const pz = person.poison;
+      person.blood = Math.max(floor, person.blood - dt * 2.2 * pz);
+      person.poison = Math.max(0, pz - dt * 0.006);
+      if (!person.dead) for (let k = 0; k < 4; k++) {
+        const q = P[(Math.random() * P.length) | 0];
+        if (!q.anchor && !q.ghost) { q.px += (Math.random() - 0.5) * pz * 1.4 * S; q.py += (Math.random() - 0.5) * pz * 1.4 * S; }
+      }
     }
   }
 
@@ -1626,6 +1812,7 @@
     pr.x += nx * d * iM; pr.y += ny * d * iM; pr.a += rn * d * iI;
     const vn = (pr.vx - pr.w * ry) * nx + (pr.vy + pr.w * rx) * ny;
     if (vn >= 0) return;
+    pr.knock = Math.max(pr.knock || 0, -vn);
     const j = -1.15 * vn / wn;
     pr.vx += nx * j * iM; pr.vy += ny * j * iM; pr.w += rn * j * iI;
     // friction along the surface
@@ -1649,6 +1836,7 @@
   function outline(pr) {
     const out = [];
     pr.parts.forEach((p, pi) => {
+      if (p.off) return;
       if (p.box) {
         for (let i = 0; i < 4; i++) {
           const A = p.wc[i], B = p.wc[(i + 1) % 4];
@@ -1694,6 +1882,7 @@
     const vbx = B.vx - B.w * rby + (pB.vel ? pB.vel[0] : 0), vby = B.vy + B.w * rbx + (pB.vel ? pB.vel[1] : 0);
     const vn = (vax - vbx) * nx + (vay - vby) * ny;
     if (vn >= 0) return;
+    A.knock = Math.max(A.knock || 0, -vn); B.knock = Math.max(B.knock || 0, -vn);
     const j = -1.15 * vn / w;
     A.vx += nx * j * iMA; A.vy += ny * j * iMA; A.w += rna * j * iIA;
     B.vx -= nx * j * iMB; B.vy -= ny * j * iMB; B.w -= rnb * j * iIB;
@@ -1770,6 +1959,7 @@
           pr.x -= nx * k * iM; pr.y -= ny * k * iM; pr.a -= rn * k * iI;
           // ...then stop them moving into each other
           if (vn < 0) {
+            pr.knock = Math.max(pr.knock || 0, -vn);
             // (a guard or handle up against a body it is stuck in stops dead, it doesn't bounce back out)
             const j = -(skewered ? 1 : 1.1) * vn / (wp + wb);
             q.px -= nx * j * wp * h; q.py -= ny * j * wp * h;
@@ -1979,8 +2169,8 @@
   function drawBlasts() {
     for (const b of blasts) {
       const u = b.t / 0.45, r = b.R * (0.25 + 0.75 * Math.sqrt(u));
-      ctx.globalAlpha = (1 - u) * 0.35;
-      ctx.fillStyle = '#000';
+      ctx.globalAlpha = (1 - u) * (b.cold ? 0.5 : 0.35);
+      ctx.fillStyle = b.cold ? '#bfe3f7' : '#000';
       ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1 - u;
       ctx.strokeStyle = '#000'; ctx.lineWidth = 3 * S * (1 - u) + 1;
@@ -2012,6 +2202,13 @@
       g.moveTo(p.wc[0][0], p.wc[0][1]);
       for (let i = 1; i < 4; i++) g.lineTo(p.wc[i][0], p.wc[i][1]);
       g.closePath();
+      if (p.off) {
+        // an open door, swung out toward us
+        const top = p.wc[1], bot = p.wc[2], k = 18 * S;
+        g.beginPath(); g.moveTo(top[0], top[1]); g.lineTo(top[0] + k, top[1] + 7 * S); g.lineTo(bot[0] + k, bot[1] - 7 * S); g.lineTo(bot[0], bot[1]); g.closePath();
+        g.fillStyle = '#fff'; g.fill(); g.strokeStyle = '#000'; g.lineWidth = ow; g.stroke();
+        continue;
+      }
       g.fillStyle = p.metal ? '#111' : '#fff'; g.fill();
       g.strokeStyle = '#000'; g.lineWidth = ow; g.stroke();
       if (p.metal && p.hw > 4 * S && p.hh > 4 * S) {
@@ -2037,8 +2234,16 @@
     }
     for (const p of pr.parts) {
       if (p.kind === 'blade' || p.box) continue;
-      g.strokeStyle = p.kind === 'grip' || p.bomb ? '#000' : '#fff'; g.lineWidth = p.r * 2;
+      g.strokeStyle = p.glass || (p.kind === 'grip' || p.bomb ? '#000' : '#fff'); g.lineWidth = p.r * 2;
       g.beginPath(); g.moveTo(p.wa[0], p.wa[1]); g.lineTo(p.wb[0] + 0.01, p.wb[1]); g.stroke();
+      if (p.flame) {
+        // a flame that always burns straight up, whichever way the torch points
+        const fx = p.wb[0], fy = p.wb[1], hgt = (14 + (g === ctx ? Math.random() * 6 : 3)) * S, w = 5 * S;
+        g.fillStyle = '#ff7a1a';
+        g.beginPath(); g.moveTo(fx - w, fy); g.quadraticCurveTo(fx - w * 0.6, fy - hgt * 0.6, fx, fy - hgt); g.quadraticCurveTo(fx + w * 0.6, fy - hgt * 0.6, fx + w, fy); g.closePath(); g.fill();
+        g.fillStyle = '#ffd23f';
+        g.beginPath(); g.moveTo(fx - w * 0.5, fy); g.lineTo(fx, fy - hgt * 0.55); g.lineTo(fx + w * 0.5, fy); g.closePath(); g.fill();
+      }
       if (p.bomb) {
         // a fuse on top, a spark while it burns, and the seconds left
         const fx = p.wa[0] + p.r * 0.5, fy = p.wa[1] - p.r;
@@ -2177,6 +2382,7 @@
     apple:  { name: 'Apple', smell: ['ORN_DP1m', 'ORN_DM3', 'ORN_VM2', 'ORN_VM3'], taste: 'GUS_SWEET', food: true },
     bitter: { name: 'Bitter pill', smell: ['ORN_DL5', 'ORN_VM7d', 'ORN_VC3'], taste: 'GUS_BITTER', food: true },
     mold:   { name: 'Mould', smell: ['ORN_DA2'], taste: null, food: false, danger: true },
+    bait:   { name: 'Poison bait', smell: ['ORN_VA3', 'ORN_DM5', 'ORN_VC4'], taste: 'GUS_SWEET', food: true, poison: true },
   };
   // Stressed and injured flies give off CO2 and other flies avoid it (Suh et al. 2004); the
   // V glomerulus senses it. Hurt or frightened people here do the same.
@@ -2216,7 +2422,7 @@
   const MODE_NAMES = {
     idle: 'standing', wander: 'wandering', flee: 'fleeing', freeze: 'frozen', cower: 'cowering',
     flinch: 'flinching', seek: 'looking for food', eat: 'eating', avoid: 'avoiding', rub: 'rubbing the sore spot', rest: 'resting',
-    down: 'down', ko: 'knocked out', held: 'held', dead: 'dead',
+    down: 'down', ko: 'knocked out', held: 'held', dead: 'dead', burning: 'on fire', sick: 'sick', iced: 'frozen solid',
   };
 
   function newMind() {
@@ -2338,11 +2544,19 @@
       m.flinchT -= dt; m.turnCool -= dt; m.backT -= dt; m.wanderT -= dt;
       if (person.rubT > 0) person.rubT -= dt;
       if (!person.brain || !person.brain.ready) { person.walkV = 0; continue; }
+      if (person.frozen) { m.mode = 'iced'; m.why = 'frozen solid, can\'t move'; person.walkV = 0; continue; }
       if (person.brainStatus) person.brainStatus = '';
       m.tickAcc += dt;
       if (m.tickAcc >= 0.1) { m.tickAcc = 0; think(person); }
       act(person, dt);
     }
+  }
+
+  // how cold a body is getting (frost it carries), felt before it freezes solid
+  function coldness(person) {
+    let f = 0, n = 0;
+    for (const q of person.pts) if (!q.anchor && !q.ghost) { f += q.frost; n++; }
+    return n ? Math.min(1, f / n * 1.5) : 0;
   }
 
   // ten times a second: gather the senses, feed the brain, read it, pick what to do
@@ -2378,6 +2592,11 @@
       input.OA = m.fear * 0.3;
       input.HUNGER = m.hunger * 0.2;
       input.FATIGUE = m.fatigue * 0.2;
+      // heat and cold are felt by the thermosensory neurons; burning hurts on top
+      input.THERMO = Math.min(1, (person.burning || 0) * 4 + (person.frozen ? 0 : coldness(person)));
+      if (person.burning > 0) input.ASC = Math.max(input.ASC, Math.min(1, 0.4 + person.burning * 3));
+      // sick from poison: a lingering aftertaste of what was eaten, and the gut's alarm
+      if (person.poison > 0.12 && m.lastAte) for (const s of ITEM_KINDS[m.lastAte].smell) input[s] = Math.max(input[s] || 0, 0.25);
       for (const k in m.smell) {
         const sets = k === 'co2' ? CO2_SMELL : ITEM_KINDS[k].smell;
         for (const s of sets) input[s] = Math.max(input[s] || 0, Math.min(0.4, 0.3 * m.smell[k] + 0.05));
@@ -2386,6 +2605,12 @@
     }
     let strongest = null, sc = 0.12;
     for (const k in m.smell) if (k !== 'co2' && ITEM_KINDS[k].food && m.smell[k] > sc) { strongest = k; sc = m.smell[k]; }
+    // the malaise of poisoning punishes the taste that caused it, a while after the meal
+    // (conditioned taste aversion): the aftertaste above is what the punishment lands on
+    if (person.poison > 0.12 && m.lastAte && ITEM_KINDS[m.lastAte].poison) {
+      if (!strongest) strongest = m.lastAte;
+      if (m.now - (m.sickAt ?? -9) > 1.2) { m.sickAt = m.now; brainPulse(person, { DAN_PPL1: 3.5 }); }
+    }
     // telling the brain which smell this is lets it build that smell's Kenyon cell fingerprint
     b.hold(input, strongest);
     if (strongest) m.odorSeen[strongest] = (m.odorSeen[strongest] || 0) + 1;
@@ -2431,6 +2656,7 @@
     else if (held && held.person === person) { mode = 'held'; why = 'wind/gravity ' + pct(a.MECH_JO); }
     else if (person.ko > 0) mode = 'ko';
     else if (!person.standing) mode = 'down';
+    else if (person.burning > 0.02) { mode = 'burning'; why = 'on fire · heat ' + pct(a.THERMO) + ' · pain ' + pct(a.ASC); }
     else if (m.flinchT > 0) { mode = 'flinch'; why = 'pain → PPL1 ' + pct(a.DAN_PPL1); }
     else if (m.now - m.threatT < 6 && (m.fear > 0.35 || a.DN_MDN > 0.05)) {
       const away = Math.sign(cx - (m.threatX ?? cx - person.dir)) || -person.dir;
@@ -2443,13 +2669,14 @@
         mode = 'flee'; m.target = away; why = 'fear ' + m.fear.toFixed(2) + ' · MDN ' + pct(a.DN_MDN) + ' · OA ' + pct(a.OA);
       }
     }
+    else if (person.poison > 0.35) { mode = 'sick'; why = 'poisoned ' + pct(Math.min(1, person.poison)); }
     else if (m.fatigue > 0.8) { mode = 'rest'; why = 'tired ' + m.fatigue.toFixed(2); }
     else if ((m.smell.mold || 0) > 0.15 || (m.smell.co2 || 0) > 0.2) {
       const src = nearestSource(person, m.smell.mold > (m.smell.co2 || 0) ? 'mold' : 'co2');
       mode = 'avoid'; m.target = Math.sign(cx - src) || -person.dir;
       why = m.smell.mold > (m.smell.co2 || 0) ? 'smell of mould (DA2 receptors)' : 'CO2 from someone hurt (V receptors)';
     }
-    else if (food && m.hunger > 0.25) {
+    else if (food && m.hunger > 0.25 && !(person.poison > 0.12)) {   // (nausea kills the appetite)
       const it = nearestItem(person, food), l = learned(person, food);
       const disgusted = m.now - (m.disgust[food] ?? -99) < 30;
       if (dislikes(person, food) || disgusted) {
@@ -2519,12 +2746,15 @@
     switch (m.mode) {
       case 'flinch': posture = 'flinch'; break;
       case 'cower': posture = 'cower'; break;
-      case 'rest': posture = 'crouch'; break;
+      case 'rest': case 'sick': posture = 'crouch'; break;
+      case 'burning': dir = person.dir; walk = 170 * S; break;   // running blind, flames and all
       case 'eat': {
         posture = 'crouch';
         const it = m.tasteItem;
         if (it && ITEM_KINDS[it.kind].taste === 'GUS_SWEET') {
           it.amount -= dt * 0.1; m.hunger = Math.max(0, m.hunger - dt * 0.3);
+          m.lastAte = it.kind;
+          if (ITEM_KINDS[it.kind].poison) person.poison = Math.min(1.3, (person.poison || 0) + dt * 0.35);
           if (it.amount <= 0) items.splice(items.indexOf(it), 1);
         }
         break;
@@ -2670,6 +2900,8 @@
         ctx.arc(0, -9, 8, 0, Math.PI * 2);
       } else if (it.kind === 'bitter') {
         ctx.rect(-5, -18, 10, 16); ctx.moveTo(-3, -18); ctx.lineTo(-3, -22); ctx.lineTo(3, -22); ctx.lineTo(3, -18);
+      } else if (it.kind === 'bait') {
+        ctx.moveTo(-13, -6); ctx.lineTo(13, -6); ctx.lineTo(10, -1); ctx.lineTo(-10, -1); ctx.closePath();
       } else {
         ctx.moveTo(-12, -2); ctx.quadraticCurveTo(-13, -12, -4, -11); ctx.quadraticCurveTo(0, -17, 6, -11);
         ctx.quadraticCurveTo(14, -10, 12, -2); ctx.closePath();
@@ -2679,6 +2911,7 @@
       if (it.kind === 'apple') { ctx.fillRect(-0.8, -21, 1.6, 5); }
       if (it.kind === 'bitter') { ctx.fillRect(-3, -12, 6, 1.5); ctx.fillRect(-0.75, -14.5, 1.5, 6.5); }
       if (it.kind === 'mold') for (const [x, y] of [[-6, -6], [0, -9], [5, -5], [-2, -4]]) ctx.fillRect(x, y, 2, 2);
+      if (it.kind === 'bait') { ctx.fillStyle = '#6f9f4f'; for (const [x, y] of [[-8, -9], [-3, -10], [2, -9], [6, -10], [-5, -8], [4, -8]]) ctx.fillRect(x, y, 2.5, 2.5); }
       ctx.restore();
       ctx.fillStyle = '#fff';
       ctx.font = `500 ${Math.round(9 * Math.max(0.8, S))}px "IBM Plex Mono", ui-monospace, monospace`;
@@ -2852,6 +3085,10 @@
       if (prop.skew.length) add('Pull out', () => { prop.skew.length = 0; });
       if (prop.fuse !== undefined) add('Detonate now', () => { prop.fuse = 0; });
       if (prop.press) add(prop.press.on ? 'Switch off' : 'Switch on', () => { prop.press.on = !prop.press.on; });
+      if (prop.kind === 'fridge') {
+        const door = prop.parts[prop.door];
+        add(door.off ? 'Close the door' : 'Open the door', () => { door.off = !door.off; });
+      }
       add('Delete ' + name.toLowerCase(), () => { if (isHeldProp(prop)) heldProp = null; props.splice(props.indexOf(prop), 1); });
       line();
     }
@@ -2873,6 +3110,7 @@
     add('Place an apple', () => addItem('apple', x));
     add('Place a bitter pill', () => addItem('bitter', x));
     add('Place mould (a danger smell)', () => addItem('mold', x));
+    add('Place poison bait', () => addItem('bait', x));
     line();
     add('View 3D fly brain', () => open3D(person));
     add('Slow motion', () => { slow = !slow; }, slow ? 'on' : 'off');

@@ -20,13 +20,16 @@ Drag to lift; swing and let go to throw.
 
 **Right-click** (press and hold on touch) for the menu: add people, place food (banana, apple, bitter pill) and mould (a danger smell), attach or remove a fly brain (up to 2 people), view the brain, view the **3D fly brain model**, heal, keep healing, immortal. When a body heals, every piece that was torn off melts into a clot of blood, flies back to the biggest part of the body, reappears there as a small, lumpy limb, swells out to size, and its skin fades from red back to normal.
 
-The **Items** button opens the items panel (sword, knife, axe, hammer, baseball bat, spear, iron block, iron beam, bomb, press). Drag one onto the field and let go; while you drag it out of the panel it collides with nothing, and becomes solid once dropped. Hold **A / D** to turn what you're holding anticlockwise / clockwise about the point you hold it by.
+The **Items** button opens the items panel (sword, knife, axe, hammer, baseball bat, spear, iron block, iron beam, bomb, torch, poison flask, liquid nitrogen, fridge, press). Drag one onto the field and let go; while you drag it out of the panel it collides with nothing, and becomes solid once dropped. Hold **A / D** to turn what you're holding anticlockwise / clockwise about the point you hold it by.
 
 - **Blades** swept fast enough cut through flesh, bone and joints.
 - **Points** driven in hard enough go into the body and through it, threading on each part they pass through (a knife one part, a sword about three, a spear more) and staying stuck. The body can only slide along the blade; a harder thrust goes deeper and can come out the back. Pulling along the blade drags the body along and then draws it out; wrenching it sideways too hard tears it free.
 - **Blunt** things bruise, dent and knock out.
 - **Iron blocks and beams** are heavy, stack, and crush people.
 - **Bombs** go off 3 seconds after being dropped (right-click: detonate now), throwing people and things outward, breaking, bruising and scorching bodies, knocking them out, and setting off other bombs nearby.
+- **The torch** sets alight whatever its flame touches, and lights bomb fuses. Fire creeps from particle to particle (upward more readily, across joints, onto anyone standing close), chars the skin black, weakens the flesh and costs blood. A person with a brain feels the heat and pain and runs.
+- **The poison flask** breaks on a hard knock and splashes poison on whoever is near: they turn a sickly green, shake, weaken until they can't stand, and slowly lose blood. **Poison bait** (right-click menu) is a sweet-smelling food that poisons whoever eats it; a person with a brain feels sick afterwards, loses its appetite, and learns to avoid that smell (conditioned taste aversion, through the same mushroom body punishment pathway as a hit).
+- **Liquid nitrogen** breaks on a hard knock and freezes everything near it. **The fridge** stands on the floor (right-click: open/close the door); bodies inside slowly freeze, fast with the door shut. A frozen body can't move, stands like a statue until something knocks it over, and is brittle as glass: a blow shatters it. It thaws after a while; fire thaws it at once.
 - **The press** stands on the floor and keeps bringing its plate down to crush whoever is under it, then lifts it again (right-click: switch off/on); anything solid stops it.
 
 ## Files
