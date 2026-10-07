@@ -5,7 +5,10 @@
   const countEl = document.getElementById('count');
   const menuEl = document.getElementById('menu');
 
-  let W = 0, H = 0, G = 0, dpr = 1;
+  // W, H, G: the world (width, height, floor), fixed once the game starts. VW, VH: the screen.
+  // cam: which part of the world is on screen, and how much it is zoomed.
+  let W = 0, H = 0, G = 0, dpr = 1, VW = 0, VH = 0;
+  const cam = { x: 0, y: 0, z: 1 };
   let S = 1; // body scale, fixed at load
   const people = [];
   const dust = [];
@@ -1409,10 +1412,16 @@
   }
 
   function drawWorld() {
+    // what of the world is on screen; beyond its walls is drawn grey
+    const x0 = cam.x, y0 = cam.y, x1 = cam.x + VW / cam.z, y1 = cam.y + VH / cam.z;
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = '#e4e4e4';
+    if (x0 < 0) ctx.fillRect(x0, y0, -x0, G - y0);
+    if (x1 > W) ctx.fillRect(W, y0, x1 - W, G - y0);
     ctx.fillStyle = '#000000';
-    ctx.fillRect(0, G, W, H - G);
+    ctx.fillRect(Math.min(x0, 0), G, Math.max(x1, W) - Math.min(x0, 0), Math.max(y1, H) - G);
+    ctx.fillRect(-3 * S, y0, 3 * S, G - y0); ctx.fillRect(W, y0, 3 * S, G - y0);
     // metre marks along the floor: 1 m ≈ body height / 1.8
     const m = 150 * S / 1.8;
     ctx.fillStyle = '#ffffff';
@@ -1428,6 +1437,9 @@
 
   function draw() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.setTransform(dpr * cam.z, 0, 0, dpr * cam.z, -cam.x * cam.z * dpr, -cam.y * cam.z * dpr);
     drawWorld();
     drawItems();
     ctx.fillStyle = '#000000';
@@ -2153,7 +2165,7 @@
   function endAt(x, y, grabbing) {
     const pr = propAt(x, y);
     if (pr) { const [lx, ly] = propLocal(pr, x, y); return { prop: pr, lx, ly }; }
-    const hit = nearest(x, y, 16 * S + 6);
+    const hit = nearest(x, y, (16 * S + 6) / cam.z);
     return hit ? { person: hit.person, i: hit.idx } : null;
   }
   function endPos(e) {
@@ -2535,10 +2547,34 @@
   propsBtn.addEventListener('click', () => toggleProps());
   propsPanel.querySelector('[data-close]').addEventListener('click', () => toggleProps(false));
 
+  // the panel shows one category at a time, chosen with the tabs along its top
+  const CATEGORIES = [
+    { name: 'Weapons', kinds: ['sword', 'knife', 'axe', 'hammer', 'bat', 'spear'] },
+    { name: 'Heavy', kinds: ['iron', 'beam'] },
+    { name: 'Hazards', kinds: ['bomb', 'torch', 'poison', 'nitrogen'] },
+    { name: 'Machines', kinds: ['generator', 'lamp', 'wire', 'fridge', 'press'] },
+  ];
+  let category = 0;
+  try { category = Math.max(0, Math.min(CATEGORIES.length - 1, +localStorage.getItem('pfpg.category') || 0)); } catch (err) { /* no storage */ }
+
   function buildPropsPanel() {
+    const tabs = propsPanel.querySelector('.pp-tabs');
+    tabs.textContent = '';
+    CATEGORIES.forEach((c, ci) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.setAttribute('role', 'tab'); b.textContent = c.name;
+      b.setAttribute('aria-selected', String(ci === category));
+      b.addEventListener('click', () => {
+        category = ci;
+        try { localStorage.setItem('pfpg.category', String(ci)); } catch (err) { /* no storage */ }
+        buildPropsPanel();
+      });
+      tabs.append(b);
+    });
     const grid = propsPanel.querySelector('.pp-grid');
     grid.textContent = '';
-    for (const kind of Object.keys(PROP_KINDS)) {
+    for (const kind of CATEGORIES[category].kinds) {
+      if (kind === 'wire') { grid.append(wireTile()); continue; }
       const tile = document.createElement('button');
       tile.type = 'button'; tile.className = 'pp-tile'; tile.dataset.kind = kind;
       tile.setAttribute('aria-label', 'Drag the ' + PROP_KINDS[kind].name.toLowerCase() + ' onto the field');
@@ -2561,6 +2597,9 @@
       tile.addEventListener('pointerdown', startSpawnDrag);
       grid.append(tile);
     }
+  }
+
+  function wireTile() {
     const tile = document.createElement('button');
     tile.type = 'button'; tile.className = 'pp-tile';
     tile.setAttribute('aria-label', 'Wire: drag onto one thing, then click another');
@@ -2575,7 +2614,7 @@
     label.textContent = 'Wire';
     tile.append(label);
     tile.addEventListener('pointerdown', startWireDrag);
-    grid.append(tile);
+    return tile;
   }
 
   function startSpawnDrag(e) {
@@ -3193,9 +3232,10 @@
   }
 
   // ---------- input ----------
+  // where a pointer is, in the world
   function pos(e) {
     const r = cv.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return { x: cam.x + (e.clientX - r.left) / cam.z, y: cam.y + (e.clientY - r.top) / cam.z };
   }
 
   function nearest(x, y, radius) {
@@ -3212,10 +3252,12 @@
     return best;
   }
 
-  const pickRadius = e => (e.pointerType === 'touch' ? 30 : 16) * S + 6;
+  // how near the pointer must be to pick something: the same on screen at any zoom
+  const pickRadius = e => ((e.pointerType === 'touch' ? 30 : 16) * S + 6) / cam.z;
   let press = null; // a touch waiting to become a long-press menu
 
   cv.addEventListener('pointerdown', e => {
+    if (pinch) return;                                   // two fingers are zooming
     if (!menuEl.hidden) { closeMenu(); return; }
     if (e.pointerType === 'mouse' && e.button !== 0) return; // right button opens the menu instead
     const p = pos(e);
@@ -3245,6 +3287,7 @@
     if (!hit) {
       const it = itemAt(p.x, p.y);
       if (it) { heldItem = it; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; }
+      else if (touches.size < 2) startPan(e);          // nothing there: drag the view instead
     }
     if (hit) {
       held = hit;
@@ -3256,11 +3299,12 @@
     }
   });
   cv.addEventListener('pointermove', e => {
+    if (pan || pinch) return;
     const p = pos(e);
     pointer.x = p.x; pointer.y = p.y;
     if (press && Math.hypot(p.x - press.x, p.y - press.y) > 10) { clearTimeout(press.timer); press = null; }
     if (heldItem) heldItem.x = Math.max(20 * S, Math.min(W - 20 * S, p.x));
-    if (!held && !heldProp && e.pointerType === 'mouse') {
+    if (!held && !heldProp && !pan && e.pointerType === 'mouse') {
       cv.style.cursor = propAt(p.x, p.y, true) || nearest(p.x, p.y, pickRadius(e)) ? 'grab' : 'default';
     }
   });
@@ -3291,7 +3335,7 @@
     const p = pos(e);
     if (pendingWire) { pendingWire = null; return; }               // right-click drops a wire being laid
     const pr = propAt(p.x, p.y);
-    const hit = pr ? null : nearest(p.x, p.y, 16 * S + 6);
+    const hit = pr ? null : nearest(p.x, p.y, (16 * S + 6) / cam.z);
     const wire = pr || hit ? null : wireAt(p.x, p.y);
     openMenu(e.clientX, e.clientY, p.x, p.y, hit && hit.person, hit || pr || wire ? null : itemAt(p.x, p.y), pr, wire);
   });
@@ -3331,7 +3375,7 @@
       add('Keep healing', () => { person.regen = !person.regen; }, person.regen ? 'on' : 'off');
       add('Immortal (no healing)', () => { person.immortal = !person.immortal; }, person.immortal ? 'on' : 'off');
       add('Delete this person', () => removePerson(person));
-      add('Connect a wire from here', () => { const hit = nearest(x, y, 16 * S + 6); if (hit) pendingWire = { person, i: hit.idx }; });
+      add('Connect a wire from here', () => { const hit = nearest(x, y, (16 * S + 6) / cam.z); if (hit) pendingWire = { person, i: hit.idx }; });
       line();
       if (person.brain || person.mind) {
         add('View brain', () => showPanel(person));
@@ -3417,20 +3461,131 @@
   window.addEventListener('blur', closeMenu);
 
   // ---------- loop ----------
+  // The screen changed size: the world stays as it is, the view adjusts.
   function resize() {
-    if (!cv.clientWidth || !cv.clientHeight) { if (!W) { W = 960; H = 640; G = 560; } return; }
     dpr = Math.min(window.devicePixelRatio || 1, 2);
-    W = cv.clientWidth; H = cv.clientHeight;
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-    G = H - Math.max(54, Math.round(H * 0.13));
-    // move each body as a whole back inside the new floor and walls, never squash it
-    for (const person of people) {
-      let up = 0, left = 0;
-      for (const q of person.pts) { up = Math.max(up, q.y - (G - q.r)); left = Math.max(left, q.x - (W - q.r)); }
-      if (up > 0 || left > 0) for (const q of person.pts) { q.y -= up; q.py -= up; q.x -= left; q.px -= left; }
-    }
-    for (const pr of props) if (pr.fixed) { pr.y = G; pr.x = Math.min(pr.x, W - 60 * S); propWorld(pr); }
+    VW = cv.clientWidth || 960; VH = cv.clientHeight || 640;
+    cv.width = Math.round(VW * dpr); cv.height = Math.round(VH * dpr);
+    if (W) clampCam();
   }
+
+  // The world is three screens wide and two high, made once, from the screen the game opens on.
+  function makeWorld() {
+    W = Math.round(VW * 3);
+    const band = Math.max(54, Math.round(VH * 0.13));
+    H = VH * 2;
+    G = H - band;
+    cam.z = 1;
+    cam.x = (W - VW) / 2;
+    cam.y = H - VH;                 // the floor where it always was, near the bottom of the screen
+  }
+
+  // ---------- the camera ----------
+  const zoomMin = () => Math.min(1, VW / W);
+  const ZOOM_MAX = 3;
+  function clampCam() {
+    cam.z = Math.max(zoomMin(), Math.min(ZOOM_MAX, cam.z));
+    const vw = VW / cam.z, vh = VH / cam.z;
+    cam.x = vw >= W ? (W - vw) / 2 : Math.max(0, Math.min(W - vw, cam.x));
+    // never below the ground; up into the sky as far as a screen above the world
+    cam.y = Math.max(-VH, Math.min(H - vh, cam.y));
+  }
+  // zoom by a factor, keeping the world point under (sx, sy) on the screen where it is
+  function zoomAt(f, sx, sy) {
+    const wx = cam.x + sx / cam.z, wy = cam.y + sy / cam.z;
+    cam.z = Math.max(zoomMin(), Math.min(ZOOM_MAX, cam.z * f));
+    cam.x = wx - sx / cam.z; cam.y = wy - sy / cam.z;
+    clampCam();
+    syncPointer();
+  }
+  // what the pointer is over moves when the view does; keep it right for anything being held
+  let lastScreen = null;
+  function syncPointer() {
+    if (!lastScreen) return;
+    pointer.x = cam.x + lastScreen.x / cam.z; pointer.y = cam.y + lastScreen.y / cam.z;
+  }
+  function screenXY(e) {
+    const r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function fitWorld() { cam.z = zoomMin(); cam.y = H; clampCam(); syncPointer(); }
+
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    const s = screenXY(e);
+    lastScreen = s;
+    zoomAt(Math.exp(-e.deltaY * 0.0015), s.x, s.y);
+  }, { passive: false });
+
+  // dragging empty space (or with the middle button) moves the view; two fingers pinch to zoom
+  let pan = null;
+  const touches = new Map();
+  function startPan(e) {
+    pan = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: cam.x, y: cam.y };
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* the pointer is already gone */ }
+    cv.style.cursor = 'move';
+  }
+  cv.addEventListener('pointerdown', e => {
+    lastScreen = screenXY(e);
+    if (e.pointerType === 'touch') {
+      touches.set(e.pointerId, lastScreen);
+      if (touches.size === 2) {
+        // a second finger: stop whatever the first was doing, and pinch instead
+        release(true);
+        pan = null;
+        const [a, b] = [...touches.values()];
+        pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+      }
+    }
+    if (e.button === 1) { e.preventDefault(); startPan(e); }
+  }, true);
+  let pinch = null;
+  cv.addEventListener('pointermove', e => {
+    lastScreen = screenXY(e);
+    if (touches.has(e.pointerId)) {
+      touches.set(e.pointerId, lastScreen);
+      if (pinch && touches.size === 2) {
+        const [a, b] = [...touches.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        zoomAt(d / (pinch.d || d), mx, my);
+        cam.x -= (mx - pinch.mx) / cam.z; cam.y -= (my - pinch.my) / cam.z;
+        clampCam();
+        pinch = { d, mx, my };
+        return;
+      }
+    }
+    if (pan && e.pointerId === pan.id) {
+      cam.x = pan.x - (e.clientX - pan.sx) / cam.z;
+      cam.y = pan.y - (e.clientY - pan.sy) / cam.z;
+      clampCam();
+    }
+  }, true);
+  const endTouch = e => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinch = null;
+    if (pan && e.pointerId === pan.id) { pan = null; cv.style.cursor = 'default'; }
+  };
+  cv.addEventListener('pointerup', endTouch, true);
+  cv.addEventListener('pointercancel', endTouch, true);
+  cv.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
+
+  // arrow keys move the view, + and - zoom
+  window.addEventListener('keydown', e => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    const step = 60 / cam.z;
+    if (e.key === 'ArrowLeft') cam.x -= step;
+    else if (e.key === 'ArrowRight') cam.x += step;
+    else if (e.key === 'ArrowUp') cam.y -= step;
+    else if (e.key === 'ArrowDown') cam.y += step;
+    else if (e.key === '+' || e.key === '=') { zoomAt(1.2, VW / 2, VH / 2); return; }
+    else if (e.key === '-' || e.key === '_') { zoomAt(1 / 1.2, VW / 2, VH / 2); return; }
+    else return;
+    e.preventDefault();
+    clampCam(); syncPointer();
+  });
+  document.getElementById('zoomIn').addEventListener('click', () => zoomAt(1.25, VW / 2, VH / 2));
+  document.getElementById('zoomOut').addEventListener('click', () => zoomAt(1 / 1.25, VW / 2, VH / 2));
+  document.getElementById('zoomFit').addEventListener('click', fitWorld);
 
   let last = performance.now(), acc = 0;
   const STEP = 1 / 60;
@@ -3452,10 +3607,11 @@
 
   function start() {
     resize();
-    S = Math.max(0.62, Math.min(1.25, H / 640));
+    makeWorld();
+    S = Math.max(0.62, Math.min(1.25, VH / 640));
     buildPropsPanel();
     if (matchMedia('(pointer: coarse)').matches) {
-      document.getElementById('hint').textContent = 'Press and hold: add people, food, a fly brain · drag to lift · Items: drag things onto the field';
+      document.getElementById('hint').textContent = 'Press and hold: add people, food, a fly brain · drag to lift · drag empty space to look around, pinch to zoom';
     }
     window.addEventListener('resize', () => { closeMenu(); resize(); });
     requestAnimationFrame(t => { last = t; frame(t); });

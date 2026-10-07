@@ -66,11 +66,13 @@
   .menu button:hover .state, .menu button:focus-visible .state { color: var(--bg); }
   .hint {
     position: fixed;
-    left: 16px; right: 16px;
+    left: 50%; transform: translateX(-50%);
+    max-width: calc(100% - 32px); width: max-content;
     bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
     text-align: center;
     font-size: 12px;
-    color: #ffffff;
+    color: #ffffff; background: #000000;      /* its own black, since the floor isn't always behind it */
+    padding: 3px 8px;
     pointer-events: none;
   }
   .panel {
@@ -101,6 +103,17 @@
   }
   .hud-btn:hover, .hud-btn:focus-visible, .hud-btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); outline: none; }
   .props-panel { left: 16px; right: auto; width: min(260px, calc(100vw - 32px)); }
+  .zoom { margin-left: auto; display: flex; gap: 6px; pointer-events: auto; }
+  .zoom .hud-btn { min-width: 32px; }
+  .pp-tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--ink); }
+  .pp-tabs button {
+    flex: 1 1 auto; font: 500 11px/1 "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: var(--ink); background: var(--bg); border: 0; border-right: 1px solid var(--ink); border-radius: 0;
+    padding: 8px 6px; cursor: pointer;
+  }
+  .pp-tabs button:last-child { border-right: 0; }
+  .pp-tabs button:hover, .pp-tabs button:focus-visible { background: #eee; outline: none; }
+  .pp-tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); }
   .pp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px 12px 4px; }
   .pp-tile {
     display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -176,11 +189,17 @@
 <div class="hud">
   <div class="brand">Playground <small id="count">0 people</small></div>
   <button type="button" class="hud-btn" id="propsBtn" aria-pressed="false">Items</button>
+  <div class="zoom" role="group" aria-label="View">
+    <button type="button" class="hud-btn" id="zoomOut" aria-label="Zoom out">−</button>
+    <button type="button" class="hud-btn" id="zoomIn" aria-label="Zoom in">+</button>
+    <button type="button" class="hud-btn" id="zoomFit">Whole map</button>
+  </div>
 </div>
-<div class="hint" id="hint">Right-click: add people, food, a fly brain · Items: drag things onto the field · A / D: turn what you hold</div>
+<div class="hint" id="hint">Right-click: add people, food, a fly brain · Items: drag things onto the field · A / D: turn what you hold · scroll to zoom, drag empty space to look around</div>
 <div class="menu" id="menu" role="menu" aria-label="Options" hidden></div>
 <aside class="panel props-panel" id="propsPanel" aria-label="Items" hidden>
   <header>Items <button type="button" data-close>Close</button></header>
+  <div class="pp-tabs" role="tablist" aria-label="Item categories"></div>
   <div class="pp-grid"></div>
   <p class="pp-note">Drag one onto the field and let go. Hold A / D to turn it anticlockwise / clockwise about where you hold it.</p>
 </aside>
@@ -205,4 +224,4 @@
 <script src="js/brain.js?v=10"></script>
 <script>FlyBrain.version = 10;</script>
 <script src="js/brain3d.js?v=10"></script>
-<script src="js/game.js?v=20"></script>
+<script src="js/game.js?v=21"></script>

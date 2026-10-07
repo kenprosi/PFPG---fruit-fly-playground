@@ -16,11 +16,11 @@ then open `http://localhost:8000/`. (Opening `index.html` directly still plays, 
 
 ## Playing
 
-Drag to lift; swing and let go to throw.
+Drag to lift; swing and let go to throw. The field is three screens wide: scroll (or pinch) to zoom, drag empty space, hold the middle mouse button or use the arrow keys to look around, and press **Whole map** to see all of it.
 
 **Right-click** (press and hold on touch) for the menu: add people, place food (banana, apple, bitter pill) and mould (a danger smell), attach or remove a fly brain (up to 2 people), view the brain, view the **3D fly brain model**, heal, keep healing, immortal. When a body heals, every piece that was torn off melts into a clot of blood, flies back to the biggest part of the body, reappears there as a small, lumpy limb, swells out to size, and its skin fades from red back to normal.
 
-The **Items** button opens the items panel (sword, knife, axe, hammer, baseball bat, spear, iron block, iron beam, bomb, torch, poison flask, liquid nitrogen, generator, lamp, fridge, press, and wire). Drag one onto the field and let go; while you drag it out of the panel it collides with nothing, and becomes solid once dropped. Hold **A / D** to turn what you're holding anticlockwise / clockwise about the point you hold it by.
+The **Items** button opens the items panel, sorted into tabs: Weapons, Heavy, Hazards and Machines (sword, knife, axe, hammer, baseball bat, spear, iron block, iron beam, bomb, torch, poison flask, liquid nitrogen, generator, lamp, fridge, press, and wire). Drag one onto the field and let go; while you drag it out of the panel it collides with nothing, and becomes solid once dropped. Hold **A / D** to turn what you're holding anticlockwise / clockwise about the point you hold it by.
 
 - **Blades** swept fast enough cut through flesh, bone and joints.
 - **Points** driven in hard enough go into the body and through it, threading on each part they pass through (a knife one part, a sword about three, a spear more) and staying stuck. The body can only slide along the blade; a harder thrust goes deeper and can come out the back. Pulling along the blade drags the body along and then draws it out; wrenching it sideways too hard tears it free.
