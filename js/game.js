@@ -378,7 +378,8 @@
     const sx = left > 0 ? left : -right;
     if (up > 0 || sx) for (const q of P) { q.y -= up; q.py -= up; q.x += sx; q.px += sx; }
     if (held && held.person === person && T[P[held.idx].bone].grown) held = null;
-    Object.assign(person, { blood: 100, dead: false, ko: 0, nBroken: 0, dented: false, dirty: true, regenT: 0, poison: 0, frozen: false, burning: 0 });
+    Object.assign(person, { blood: 100, dead: false, ko: 0, nBroken: 0, dented: false, dirty: true, regenT: 0, poison: 0, frozen: false, burning: 0,
+      heartStopped: false, shockTime: 0, defib: 0 });
     updateCount();
   }
 
@@ -1178,8 +1179,9 @@
         }
       }
       updateBurnFrostPoison(person, dt, floor);
+      updateShock(person, dt, floor);
       if (person.immortal && person.dead) { person.dead = false; changed = true; }
-      if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0)) {
+      if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0 || person.heartStopped)) {
         person.dead = true; changed = true;
       }
 
@@ -1230,6 +1232,7 @@
       else if (person.poison > 0.45) person.ctrl = Math.min(person.ctrl, Math.max(0, 1.9 - person.poison * 2.2));
     }
     updateEnvironment(dt);
+    updatePower(dt);
     if (changed) updateCount();
     updateMinds(dt);
     updatePanel(dt);
@@ -1435,7 +1438,9 @@
     ctx.globalAlpha = 1;
     for (const p of people) if (!(held && held.person === p)) drawPerson(p);
     if (held) drawPerson(held.person);
+    drawLightAndSparks();
     drawProps();
+    drawWires();
     drawBlasts();
     ctx.fillStyle = BLOOD;
     for (const d of drops) { ctx.fillStyle = d.c || BLOOD; ctx.fillRect(d.x - d.s / 2, d.y - d.s / 2, d.s, d.s); }
@@ -1509,6 +1514,15 @@
       { a: [-7, 0], b: [4, 0], r: 5.5, m: 1.2, kind: 'blunt', glass: '#9fd0ee' },
       { a: [4, 0], b: [11, 0], r: 2, m: 0.3, kind: 'blunt', glass: '#9fd0ee' },
     ] },
+    generator: { name: 'Generator', source: true, parts: [
+      { box: [0, -13, 18, 13], m: 30, kind: 'blunt', metal: true, gen: true },
+      { a: [12, -26], b: [12, -33], r: 2, m: 0.5, kind: 'grip' },
+    ] },
+    lamp: { name: 'Lamp', lamp: true, parts: [
+      { box: [0, -3, 8, 3], m: 1.5, kind: 'blunt' },
+      { a: [0, -6], b: [0, -12], r: 2.2, m: 0.4, kind: 'grip' },
+      { a: [0, -19], b: [0, -19], r: 7, m: 0.4, kind: 'blunt', glass: '#ffffff', bulb: true },
+    ] },
     fridge: { name: 'Fridge', fixed: true, parts: [
       { box: [-43, -92, 4, 92], m: 1, kind: 'blunt' },
       { box: [0, -187, 47, 5], m: 1, kind: 'blunt' },
@@ -1522,6 +1536,8 @@
       { box: [0, -155, 44, 5], m: 1, kind: 'blunt', plate: true },
     ] },
   };
+  // metal things carry current to each other and to anyone touching them
+  const CONDUCTIVE = new Set(['sword', 'knife', 'axe', 'hammer', 'spear', 'iron', 'beam', 'press']);
   const CUT = 380, STAB = 420;   // px/s at scale 1: how fast an edge must sweep / a point drive in
   const props = [];
   let heldProp = null;           // { prop, lx, ly, angle }
@@ -1546,13 +1562,14 @@
         Math.min(p.a[0], p.b[0]) >= def.pierce[0] - 0.01 && Math.max(p.a[0], p.b[0]) <= def.pierce[1] + 0.01;
       return { a, b, r, hw, hh, box: !!p.box, kind: p.kind, tip: !!p.tip, sharp: p.sharp || 1, onLine,
         metal: !!p.metal, bomb: !!p.bomb, plate: !!p.plate, rod: !!p.rod, flame: !!p.flame, glass: p.glass || null,
-        door: !!p.door, off: false, vel: null,
+        door: !!p.door, gen: !!p.gen, bulb: !!p.bulb, off: false, vel: null,
         wa: [0, 0], wb: [0, 0], wc: p.box ? [[0, 0], [0, 0], [0, 0], [0, 0]] : null };
     });
     const pierce = def.pierce && { x0: (def.pierce[0] - cx) * S, x1: (def.pierce[1] - cx) * S, y: -cy * S,
       r: Math.max(...parts.filter(p => p.onLine).map(p => p.r)) };
     const pr = { kind, parts, m: M, I: I + M * S * S, R, x, y, a: a || 0, vx: 0, vy: 0, w: 0, blood: 0, pierce, skew: [], ghost: false,
-      fixed: !!def.fixed, fuse: def.fuse, shatter: def.shatter };
+      fixed: !!def.fixed, fuse: def.fuse, shatter: def.shatter,
+      conductive: CONDUCTIVE.has(kind), touch: [], touchP: [], on: !!def.source, lit: false };
     if (kind === 'fridge') { pr.door = parts.findIndex(p => p.door); parts[pr.door].off = true; }   // starts open
     if (kind === 'press') {
       const plate = parts.findIndex(p => p.plate), rod = parts.findIndex(p => p.rod);
@@ -1641,7 +1658,7 @@
   // every substep, after the bodies have moved
   function stepProps(h) {
     const g = GRAV();
-    for (const pr of props) { pr.pvx = pr.vx; pr.pvy = pr.vy + g * h; pr.knock = 0; }
+    for (const pr of props) { pr.pvx = pr.vx; pr.pvy = pr.vy + g * h; pr.knock = 0; pr.touch.length = 0; pr.touchP.length = 0; }
     for (const pr of props) {
       if (pr.ghost) continue;
       if (pr.fixed) { if (pr.press) runPress(pr, h); }
@@ -1859,12 +1876,18 @@
   }
   function touchProps(A, B) {
     const pts = outline(A);
+    const margin = 1.5 * S, wired = A.conductive || A.on || B.conductive || B.on;
+    let touching = false;
     for (let k = 0; k < pts.length; k += 4) for (const p of B.parts) {
-      const hit = surface(B, p, pts[k], pts[k + 1], pts[k + 2]);
+      // (looked for a little way out, so things resting against each other count as touching
+      // for electricity even when the push between them has just parted them)
+      const hit = surface(B, p, pts[k], pts[k + 1], pts[k + 2] + margin);
       if (!hit) continue;
-      const [bx, by, nx, ny, pen] = hit, rad = pts[k + 2];
-      bodyTouch(A, pts[k] - nx * rad, pts[k + 1] - ny * rad, A.parts[pts[k + 3]], B, bx, by, p, nx, ny, pen);
+      touching = true;
+      const [bx, by, nx, ny, reach] = hit, rad = pts[k + 2], pen = reach - margin;
+      if (pen > 0) bodyTouch(A, pts[k] - nx * rad, pts[k + 1] - ny * rad, A.parts[pts[k + 3]], B, bx, by, p, nx, ny, pen);
     }
+    if (touching && wired) { A.touch.push(B); B.touch.push(A); }
   }
   function bodyTouch(A, ax, ay, pA, B, bx, by, pB, nx, ny, pen) {
     // a press plate coming down on something solid stops there (bodies it crushes; props it can't)
@@ -1930,9 +1953,14 @@
         if (ddx * ddx + ddy * ddy > lim * lim) continue;
         for (const p of pr.parts) {
           if (skewered && p.onLine) continue;          // it runs through this body (holdSkewers)
-          const hit = surface(pr, p, q.x, q.y, q.r);
+          // (metal is looked for a little way out, so a body resting against it counts as touching
+          // for electricity)
+          const margin = pr.conductive ? 1.5 * S : 0;
+          const hit = surface(pr, p, q.x, q.y, q.r + margin);
           if (!hit) continue;
-          const [cx, cy, nx, ny, pen] = hit;
+          if (pr.conductive) pr.touchP.push(person, i);
+          const [cx, cy, nx, ny] = hit, pen = hit[4] - margin;
+          if (pen <= 0) continue;
           const rx = cx - pr.x, ry = cy - pr.y, rn = rx * ny - ry * nx;
           const wp = isHeld(person, i) ? 0.2 : 1, wb = iM + rn * rn * iI;
           const pvx = p.vel ? p.vel[0] : 0, pvy = p.vel ? p.vel[1] : 0;
@@ -2114,6 +2142,200 @@
     if (pr.skew.length) pr.w = Math.max(-10, Math.min(10, pr.w * 0.98));
   }
 
+  // ---------- electricity ----------
+  // Wires join two things: a prop (at a point on it) or a person (at a particle). Current flows
+  // from a running generator along wires and through metal props that touch; a lamp on the
+  // circuit lights; anyone touching something live, or with a live wire on them, is shocked.
+  const wires = [];
+  let pendingWire = null;        // a wire with one end attached, the other following the pointer
+  const WIRE_MAX = 460;          // how far a wire stretches (at scale 1) before it snaps
+
+  function endAt(x, y, grabbing) {
+    const pr = propAt(x, y);
+    if (pr) { const [lx, ly] = propLocal(pr, x, y); return { prop: pr, lx, ly }; }
+    const hit = nearest(x, y, 16 * S + 6);
+    return hit ? { person: hit.person, i: hit.idx } : null;
+  }
+  function endPos(e) {
+    if (e.prop) return propPoint(e.prop, e.lx, e.ly);
+    const q = e.person.pts[e.i];
+    return [q.x, q.y];
+  }
+  const endValid = e => e.prop ? props.includes(e.prop) && !e.prop.ghost
+    : people.includes(e.person) && !e.person.pts[e.i].ghost;
+  const sameThing = (a, b) => (a.prop && a.prop === b.prop) || (a.person && a.person === b.person);
+
+  function finishWire(e) {
+    if (!pendingWire) return;
+    if (e && !sameThing(e, pendingWire)) wires.push({ a: pendingWire, b: e, live: false });
+    pendingWire = null;
+  }
+
+  // the sagging curve a wire hangs in, as points
+  function wirePoints(w) {
+    const [ax, ay] = endPos(w.a), [bx, by] = endPos(w.b);
+    const d = Math.hypot(bx - ax, by - ay), sag = Math.min(80 * S, Math.max(0, WIRE_MAX * S - d) * 0.3);
+    const pts = [];
+    for (let k = 0; k <= 16; k++) {
+      const t = k / 16;
+      pts.push(ax + (bx - ax) * t, ay + (by - ay) * t + sag * 4 * t * (1 - t));
+    }
+    return pts;
+  }
+  function wireAt(x, y) {
+    for (const w of wires) {
+      const pts = wirePoints(w);
+      for (let k = 0; k < pts.length - 2; k += 2) {
+        const [cx, cy] = closestOnSeg(x, y, [pts[k], pts[k + 1]], [pts[k + 2], pts[k + 3]]);
+        if (Math.hypot(x - cx, y - cy) < 6 * S) return w;
+      }
+    }
+    return null;
+  }
+
+  function updatePower(dt) {
+    // wires whose ends are gone go too; stretched too far, they snap
+    for (let k = wires.length - 1; k >= 0; k--) {
+      const w = wires[k];
+      if (!endValid(w.a) || !endValid(w.b)) { wires.splice(k, 1); continue; }
+      const [ax, ay] = endPos(w.a), [bx, by] = endPos(w.b);
+      if (Math.hypot(bx - ax, by - ay) > WIRE_MAX * S) { puff((ax + bx) / 2, (ay + by) / 2, 4); wires.splice(k, 1); }
+    }
+    if (pendingWire && !endValid(pendingWire)) pendingWire = null;
+    // what is live: out from running generators along wires and through touching metal
+    const live = new Set(), todo = props.filter(pr => pr.on && !pr.ghost);
+    for (const pr of todo) live.add(pr);
+    while (todo.length) {
+      const pr = todo.pop();
+      const reach = o => { if (!live.has(o)) { live.add(o); todo.push(o); } };
+      for (const w of wires) {
+        if (w.a.prop === pr && w.b.prop) reach(w.b.prop);
+        if (w.b.prop === pr && w.a.prop) reach(w.a.prop);
+      }
+      if (pr.conductive || pr.on) for (const o of pr.touch) if (o.conductive) reach(o);
+    }
+    for (const pr of props) pr.lit = !!PROP_KINDS[pr.kind].lamp && live.has(pr);
+    for (const w of wires) {
+      w.live = (w.a.prop && live.has(w.a.prop)) || (w.b.prop && live.has(w.b.prop));
+      if (!w.live) continue;
+      // a live wire's end on a person runs current through them
+      for (const e of [w.a, w.b]) if (e.person) shock(e.person, e.i);
+    }
+    for (const pr of live) if (pr.conductive) for (let k = 0; k < pr.touchP.length; k += 2) shock(pr.touchP[k], pr.touchP[k + 1]);
+  }
+
+  function shock(person, i) {
+    person.shockT = 0.15;
+    person.shockAt = i;
+  }
+
+  // Current through a body: every muscle clenches and jerks, the skin burns where it goes in,
+  // it hurts; kept up for long the heart stops. A short jolt to a heart that has stopped can
+  // start it again, as a defibrillator does.
+  function updateShock(person, dt, floor) {
+    const P = person.pts, J = person.joints;
+    if (person.shockT > 0) {
+      person.shockT -= dt;
+      const q = P[person.shockAt];
+      if (q && !q.ghost) {
+        q.burn = Math.min(1, q.burn + dt * 0.8);
+        for (const bi of q.bonds) { const b = person.bonds[bi]; const o = P[b.a === person.shockAt ? b.b : b.a]; if (!o.anchor) o.burn = Math.min(1, o.burn + dt * 0.3); }
+      }
+      if (!person.dead) {
+        person.shockTime = (person.shockTime || 0) + dt;
+        person.ko = Math.max(person.ko, 1.2);
+        for (let k = 0; k < 30; k++) {
+          const o = P[(Math.random() * P.length) | 0];
+          if (!o.anchor && !o.ghost) { o.px += (Math.random() - 0.5) * 2.6 * S; o.py += (Math.random() - 0.5) * 2.6 * S; }
+        }
+        person.blood = Math.max(floor, person.blood - dt * 1.5);
+        if (person.mind && q && Math.random() < dt * 6) feel(person, person.shockAt, 1200 * S, q.x);
+        if (person.shockTime > 3 && !person.immortal) person.heartStopped = true;
+      } else if (person.heartStopped) person.defib = (person.defib || 0) + dt;
+    } else {
+      person.shockTime = Math.max(0, (person.shockTime || 0) - dt * 0.5);
+      if (person.defib) {
+        if (person.defib < 0.8 && person.blood > 20 && J[NECK].active && J[WAIST].active) {
+          person.heartStopped = false; person.dead = false; person.ko = 4; person.shockTime = 0;
+          updateCount();
+        }
+        person.defib = 0;
+      }
+    }
+  }
+
+  // light from lit lamps, as seen from a point: how bright, and from where
+  function lightAt(x, y) {
+    let best = 0, from = null;
+    for (const pr of props) {
+      if (!pr.lit) continue;
+      const l = 1 / (1 + Math.hypot(pr.x - x, pr.y - y) / (180 * S));
+      if (l > best) { best = l; from = pr.x; }
+    }
+    return { amount: best, from };
+  }
+
+  function drawWires() {
+    for (const w of wires) {
+      const pts = wirePoints(w);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath(); ctx.moveTo(pts[0], pts[1]);
+      for (let k = 2; k < pts.length; k += 2) ctx.lineTo(pts[k], pts[k + 1]);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2.2 * S; ctx.stroke();
+      if (w.live) { ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 0.9 * S; ctx.stroke(); }
+      ctx.fillStyle = '#000';
+      for (const e of [w.a, w.b]) { const [x, y] = endPos(e); ctx.fillRect(x - 2.5 * S, y - 2.5 * S, 5 * S, 5 * S); }
+    }
+    if (pendingWire) {
+      const [ax, ay] = endPos(pendingWire);
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 2 * S; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(pointer.x, pointer.y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#000'; ctx.fillRect(ax - 2.5 * S, ay - 2.5 * S, 5 * S, 5 * S);
+    }
+  }
+
+  // glow round lit lamps, and sparks where current goes into someone
+  function drawLightAndSparks() {
+    for (const pr of props) {
+      if (!pr.lit) continue;
+      const b = pr.parts.find(p => p.bulb), x = b.wa[0], y = b.wa[1], r = 150 * S;
+      const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, 'rgba(255,226,110,0.45)'); gr.addColorStop(1, 'rgba(255,226,110,0)');
+      ctx.fillStyle = gr; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    for (const person of people) {
+      if (!(person.shockT > 0)) continue;
+      const q = person.pts[person.shockAt];
+      if (!q) continue;
+      for (let k = 0; k < 3; k++) {
+        let x = q.x, y = q.y;
+        ctx.beginPath(); ctx.moveTo(x, y);
+        for (let n = 0; n < 5; n++) { x += (Math.random() - 0.5) * 16 * S; y += (Math.random() - 0.5) * 16 * S; ctx.lineTo(x, y); }
+        ctx.strokeStyle = k ? '#ffd23f' : '#000'; ctx.lineWidth = (k ? 1.2 : 2) * S; ctx.stroke();
+      }
+    }
+  }
+
+  // the wire tile in the items panel: drag it onto one thing, then click another
+  function startWireDrag(e) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const up = ev => {
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      const r = propsPanel.getBoundingClientRect();
+      const overPanel = !propsPanel.hidden && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+      if (ev.type === 'pointercancel' || overPanel) return;
+      const q = pos(ev);
+      pointer.x = q.x; pointer.y = q.y;
+      pendingWire = endAt(q.x, q.y);
+    };
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  }
+  window.addEventListener('keydown', e => { if (e.key === 'Escape' && pendingWire) pendingWire = null; });
+
   // ---------- bombs ----------
   // A blast throws everything near it outward, hardest close in; bodies are broken, bruised
   // and scorched, knocked out, and other bombs it reaches go off a moment later.
@@ -2218,6 +2440,15 @@
         g.strokeStyle = '#777'; g.lineWidth = Math.max(1, 0.8 * S);
         g.beginPath(); g.moveTo(a1[0], a1[1]); g.lineTo(a2[0], a2[1]); g.lineTo(a3[0], a3[1]); g.stroke();
       }
+      if (p.gen) {
+        // a lightning bolt on the casing, yellow while it runs
+        const c = pr.c ?? Math.cos(pr.a), sn = pr.s ?? Math.sin(pr.a), k = Math.min(p.hw, p.hh) * 0.75;
+        const pt = (lx, ly) => [p.wa[0] + c * lx - sn * ly, p.wa[1] + sn * lx + c * ly];
+        const bolt = [[0.15, -1], [-0.5, 0.15], [-0.05, 0.15], [-0.2, 1], [0.5, -0.2], [0.05, -0.2]].map(([u, v]) => pt(u * k, v * k));
+        g.beginPath(); g.moveTo(bolt[0][0], bolt[0][1]);
+        for (const b of bolt.slice(1)) g.lineTo(b[0], b[1]);
+        g.closePath(); g.fillStyle = pr.on && g === ctx ? '#ffd23f' : '#fff'; g.fill();
+      }
       if (p.plate) {
         g.strokeStyle = '#000'; g.lineWidth = Math.max(1, 0.8 * S);
         for (let i = -3; i <= 3; i++) {
@@ -2234,7 +2465,7 @@
     }
     for (const p of pr.parts) {
       if (p.kind === 'blade' || p.box) continue;
-      g.strokeStyle = p.glass || (p.kind === 'grip' || p.bomb ? '#000' : '#fff'); g.lineWidth = p.r * 2;
+      g.strokeStyle = p.bulb && pr.lit ? '#fff0a0' : p.glass || (p.kind === 'grip' || p.bomb ? '#000' : '#fff'); g.lineWidth = p.r * 2;
       g.beginPath(); g.moveTo(p.wa[0], p.wa[1]); g.lineTo(p.wb[0] + 0.01, p.wb[1]); g.stroke();
       if (p.flame) {
         // a flame that always burns straight up, whichever way the torch points
@@ -2330,6 +2561,21 @@
       tile.addEventListener('pointerdown', startSpawnDrag);
       grid.append(tile);
     }
+    const tile = document.createElement('button');
+    tile.type = 'button'; tile.className = 'pp-tile';
+    tile.setAttribute('aria-label', 'Wire: drag onto one thing, then click another');
+    const c = document.createElement('canvas');
+    c.width = 200; c.height = 80;
+    const g = c.getContext('2d');
+    g.lineCap = 'round'; g.strokeStyle = '#000'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(30, 30); g.quadraticCurveTo(100, 85, 170, 30); g.stroke();
+    g.fillStyle = '#000'; g.fillRect(22, 22, 14, 14); g.fillRect(164, 22, 14, 14);
+    tile.append(c);
+    const label = document.createElement('span');
+    label.textContent = 'Wire';
+    tile.append(label);
+    tile.addEventListener('pointerdown', startWireDrag);
+    grid.append(tile);
   }
 
   function startSpawnDrag(e) {
@@ -2423,6 +2669,7 @@
     idle: 'standing', wander: 'wandering', flee: 'fleeing', freeze: 'frozen', cower: 'cowering',
     flinch: 'flinching', seek: 'looking for food', eat: 'eating', avoid: 'avoiding', rub: 'rubbing the sore spot', rest: 'resting',
     down: 'down', ko: 'knocked out', held: 'held', dead: 'dead', burning: 'on fire', sick: 'sick', iced: 'frozen solid',
+    shocked: 'electrocuted', light: 'drawn to the light',
   };
 
   function newMind() {
@@ -2594,6 +2841,10 @@
       input.FATIGUE = m.fatigue * 0.2;
       // heat and cold are felt by the thermosensory neurons; burning hurts on top
       input.THERMO = Math.min(1, (person.burning || 0) * 4 + (person.frozen ? 0 : coldness(person)));
+      // light falls on the photoreceptors; current through the body is pain everywhere at once
+      m.light = lightAt(hx, hy);
+      input.VIS_PHOTO = Math.min(0.6, m.light.amount * 0.8);
+      if (person.shockT > 0) { input.ASC = 1; input.MECH_BRISTLE = 0.8; }
       if (person.burning > 0) input.ASC = Math.max(input.ASC, Math.min(1, 0.4 + person.burning * 3));
       // sick from poison: a lingering aftertaste of what was eaten, and the gut's alarm
       if (person.poison > 0.12 && m.lastAte) for (const s of ITEM_KINDS[m.lastAte].smell) input[s] = Math.max(input[s] || 0, 0.25);
@@ -2654,6 +2905,7 @@
     let mode = 'idle', why = '';
     if (person.dead) mode = 'dead';
     else if (held && held.person === person) { mode = 'held'; why = 'wind/gravity ' + pct(a.MECH_JO); }
+    else if (person.shockT > 0) { mode = 'shocked'; why = 'current through the body · pain ' + pct(a.ASC); }
     else if (person.ko > 0) mode = 'ko';
     else if (!person.standing) mode = 'down';
     else if (person.burning > 0.02) { mode = 'burning'; why = 'on fire · heat ' + pct(a.THERMO) + ' · pain ' + pct(a.ASC); }
@@ -2690,6 +2942,10 @@
       }
     }
     else if (m.now - m.hitT < 8 && m.fear < 0.3 && m.hitPart !== null) { mode = 'rub'; why = 'where it was just hit'; }
+    // flies are drawn to light (positive phototaxis)
+    else if (m.light && m.light.amount > 0.25 && Math.abs(m.light.from - cx) > 30 * S) {
+      mode = 'light'; m.target = Math.sign(m.light.from - cx); why = 'drawn to the light · photoreceptors ' + pct(a.VIS_PHOTO);
+    }
     else {
       mode = 'wander';
       // mostly on the move, now and then a short pause (a fly at rest still explores)
@@ -2772,6 +3028,7 @@
       }
       case 'rub': if (steady) { person.rubT = 0.2; person.rubPart = m.hitPart; } break;
       case 'wander': if (m.wanderDir) { dir = m.wanderDir; walk = 50 * S; } break;
+      case 'light': dir = m.target; walk = 45 * S; break;
     }
     // don't walk into the walls, or into someone just ahead: bumping into each other knocks
     // both over. Wandering turns back; anything else waits.
@@ -2962,7 +3219,9 @@
     if (!menuEl.hidden) { closeMenu(); return; }
     if (e.pointerType === 'mouse' && e.button !== 0) return; // right button opens the menu instead
     const p = pos(e);
-    pointer.x = p.x; pointer.y = p.y; pointer.down = true;
+    pointer.x = p.x; pointer.y = p.y;
+    if (pendingWire) { finishWire(endAt(p.x, p.y)); return; }   // the click puts the wire's other end down
+    pointer.down = true;
     const grabbed = propAt(p.x, p.y, true);
     const hit = grabbed ? null : nearest(p.x, p.y, pickRadius(e));
     if (e.pointerType !== 'mouse') {
@@ -3030,9 +3289,11 @@
     e.preventDefault();
     if (press || !menuEl.hidden) return; // a long-press is already handling it
     const p = pos(e);
+    if (pendingWire) { pendingWire = null; return; }               // right-click drops a wire being laid
     const pr = propAt(p.x, p.y);
     const hit = pr ? null : nearest(p.x, p.y, 16 * S + 6);
-    openMenu(e.clientX, e.clientY, p.x, p.y, hit && hit.person, hit || pr ? null : itemAt(p.x, p.y), pr);
+    const wire = pr || hit ? null : wireAt(p.x, p.y);
+    openMenu(e.clientX, e.clientY, p.x, p.y, hit && hit.person, hit || pr || wire ? null : itemAt(p.x, p.y), pr, wire);
   });
 
   function spawnAt(x, y) {
@@ -3043,7 +3304,7 @@
   }
 
   // ---------- right-click menu ----------
-  function openMenu(clientX, clientY, x, y, person, item, prop) {
+  function openMenu(clientX, clientY, x, y, person, item, prop, wire) {
     menuEl.textContent = '';
     const heading = text => {
       const h = document.createElement('div');
@@ -3070,6 +3331,7 @@
       add('Keep healing', () => { person.regen = !person.regen; }, person.regen ? 'on' : 'off');
       add('Immortal (no healing)', () => { person.immortal = !person.immortal; }, person.immortal ? 'on' : 'off');
       add('Delete this person', () => removePerson(person));
+      add('Connect a wire from here', () => { const hit = nearest(x, y, 16 * S + 6); if (hit) pendingWire = { person, i: hit.idx }; });
       line();
       if (person.brain || person.mind) {
         add('View brain', () => showPanel(person));
@@ -3085,11 +3347,18 @@
       if (prop.skew.length) add('Pull out', () => { prop.skew.length = 0; });
       if (prop.fuse !== undefined) add('Detonate now', () => { prop.fuse = 0; });
       if (prop.press) add(prop.press.on ? 'Switch off' : 'Switch on', () => { prop.press.on = !prop.press.on; });
+      if (PROP_KINDS[prop.kind].source) add(prop.on ? 'Stop the generator' : 'Start the generator', () => { prop.on = !prop.on; });
+      add('Connect a wire from here', () => { const [lx, ly] = propLocal(prop, x, y); pendingWire = { prop, lx, ly }; });
       if (prop.kind === 'fridge') {
         const door = prop.parts[prop.door];
         add(door.off ? 'Close the door' : 'Open the door', () => { door.off = !door.off; });
       }
       add('Delete ' + name.toLowerCase(), () => { if (isHeldProp(prop)) heldProp = null; props.splice(props.indexOf(prop), 1); });
+      line();
+    }
+    if (wire) {
+      heading('Wire' + (wire.live ? ' · live' : ''));
+      add('Cut the wire', () => wires.splice(wires.indexOf(wire), 1));
       line();
     }
     if (item) {
@@ -3121,7 +3390,7 @@
         people.forEach(p => { if (p.brain) p.brain.kill(); });
         hidePanel();
         people.length = 0; held = null; dust.length = 0; drops.length = 0; stains.length = 0; items.length = 0; updateCount();
-        props.length = 0; heldProp = null;
+        props.length = 0; heldProp = null; wires.length = 0; pendingWire = null;
       });
     }
 
