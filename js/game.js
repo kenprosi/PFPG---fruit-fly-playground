@@ -103,6 +103,7 @@
           const o = (ci / (cols - 1) - 0.5) * w;
           const q = addPt(cx + nx * o, cy + ny * o, r, bi, false);
           pts[q].core = ci > 0 && ci < cols - 1;
+          pts[q].row = ri;
           row.push(q);
         }
         grid.push(row);
@@ -254,6 +255,7 @@
   // of the body and gathers there into the missing parts (see updateReform); the rest mends at
   // once. With nothing whole left to grow from, the body is rebuilt where the chest is.
   function heal(person) {
+    wake(person);
     if (person.reform || person.inflate) return;
     const P = person.pts, B = person.bones;
     const T = healPlan(person);
@@ -385,7 +387,8 @@
       bone.orig = bone.rest.map(r => r.slice());
     });
     if (regrew) person.inflate = { t: 0, dur: 0.9 };
-    for (const o of person.organs || []) o.hp = 1;
+    for (const o of person.organs || []) { o.hp = 1; o.out = false; }
+    for (let k = gibs.length - 1; k >= 0; k--) if (gibs[k].person === person) gibs.splice(k, 1);
     person.organDead = false;
     for (const b of person.bonds) { b.broken = false; b.hp = 1; b.L = b.L0; }
     // a limb that grew back into the floor or a wall lifts the body clear instead of tearing again
@@ -444,15 +447,27 @@
   function fragments(person) {
     const P = person.pts, bonds = person.bonds;
     person.shattered = false;
+    person.hinges = [];
     person.bones.forEach((bone, bi) => {
       const all = bone.all, m = all.length, par = new Int32Array(m);
       for (let k = 0; k < m; k++) par[k] = k;
       const find = k => { while (par[k] !== k) { par[k] = par[par[k]]; k = par[k]; } return k; };
+      // a limb's bone is the middle column: snapped between two rows, the limb is fractured there.
+      // The flesh across the break no longer holds its shape, it only hangs on (person.hinges).
+      bone.fracture = -1;
+      if (bi >= 3) for (let r = 0; r < bone.grid.length - 1; r++) {
+        const bb = person.bondMap.get(key(bone.grid[r][1], bone.grid[r + 1][1]));
+        if (bb !== undefined && bonds[bb].broken) { bone.fracture = r; break; }
+      }
       for (const i of all) {
         if (P[i].anchor) continue;
         for (const ob of P[i].bonds) {
           const b = bonds[ob];
           if (b.broken || b.kind !== 'in') continue;
+          if (bone.fracture >= 0 && Math.min(P[b.a].row, P[b.b].row) === bone.fracture && P[b.a].row !== P[b.b].row) {
+            if (b.a === i) person.hinges.push(b);
+            continue;
+          }
           const ra = find(P[b.a].k), rb = find(P[b.b].k);
           if (ra !== rb) par[ra] = rb;
         }
@@ -534,7 +549,7 @@
       if (!j.active) { j.cSide = j.pSide = []; return; }
       j.cSide = side(j.c, ji); j.pSide = side(j.p, ji);
     });
-    person.legsOk = LEG_JOINTS.every(ji => J[ji].active);
+    person.legsOk = LEG_JOINTS.every(ji => J[ji].active) && [3, 4, 5, 6].every(bi => B[bi].fracture < 0);
     person.dirty = false;
   }
 
@@ -636,6 +651,16 @@
 
   function impact(person, i, speed, x, y) {
     const q = person.pts[i];
+    if (speed > 1400 * S && q.bone >= 3 && !q.anchor) {
+      const g = person.bones[q.bone].grid, d = (speed - 1400 * S) / (1600 * S) * (q.frost > 0.5 ? 2 : 1);
+      for (const r of [q.row - 1, q.row]) {
+        if (r < 0 || r >= g.length - 1) continue;
+        const bb = person.bondMap.get(key(g[r][1], g[r + 1][1]));
+        if (bb === undefined || person.bonds[bb].broken) continue;
+        person.bonds[bb].hp -= d;
+        if (person.bonds[bb].hp <= 0) breakBond(person, bb);
+      }
+    }
     if (person.mind) feel(person, i, speed, x);
     const lim = (q.bone === HEAD ? 780 : 1150) * S;
     if (speed > lim * 0.55) puff(x, y, Math.min(8, Math.floor(speed / (220 * S))));
@@ -736,11 +761,17 @@
   }
 
   let tick = 0;
+  // A body that is lying still and can't move by itself (dead, or legs gone) is put to sleep:
+  // no simulation at all until something touches it. Piles of corpses then cost nothing.
+  function wake(person) { person.asleep = false; person.stillT = 0; person.stillAt = null; }
+
   function substep(h) {
     lastH = h;
     tick++;
     const g = GRAV();
     for (const person of people) {
+      if (person.asleep && (person.dirty || (held && held.person === person))) wake(person);
+      if (person.asleep) continue;
       if (person.dirty) topology(person);
       const P = person.pts;
       for (let i = 0; i < P.length; i++) {
@@ -800,11 +831,11 @@
       }
       if (tick % 2 === 0) muscles(person);
     }
-    for (let it = 0; it < 3; it++) for (const person of people) solveBody(person);
+    for (let it = 0; it < 3; it++) for (const person of people) if (!person.asleep) solveBody(person);
     collideWorld(h);
     collideAll(h);
     stepProps(h);
-    for (const person of people) checkBreaks(person);
+    for (const person of people) if (!person.asleep) checkBreaks(person);
   }
 
   function solveBody(person) {
@@ -822,6 +853,15 @@
       const diff = (d - b.L) / d / (wa + wb);
       A.x += dx * diff * wa; A.y += dy * diff * wa;
       B.x -= dx * diff * wb; B.y -= dy * diff * wb;
+    }
+    // flesh holding a broken bone together: it stretches, and torn far enough it gives
+    for (const b of person.hinges) {
+      if (b.broken) continue;
+      const A = P[b.a], B = P[b.b], dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy);
+      if (d < 1e-6) continue;
+      if (d > b.L * 2.4) { breakBond(person, person.bonds.indexOf(b)); continue; }
+      const diff = (d - b.L) / d / 2 * 0.6;
+      A.x += dx * diff; A.y += dy * diff; B.x -= dx * diff; B.y -= dy * diff;
     }
     for (const bone of person.bones) if (!bone.ghost) for (const f of bone.frags) keepShape(person, bone, f);
     // joint limits: push back toward the nearer limit, never the long way round
@@ -1058,6 +1098,7 @@
 
   function collideWorld(h) {
     for (const person of people) {
+      if (person.asleep) continue;
       const P = person.pts;
       for (let i = 0; i < P.length; i++) {
         const q = P[i];
@@ -1140,6 +1181,9 @@
     const rr = p.r + q.r + S;
     const d2 = dx * dx + dy * dy;
     if (d2 >= rr * rr || d2 === 0) return;
+    if (A.asleep && B.asleep) return;
+    if (A.asleep) wake(A);
+    if (B.asleep) wake(B);
     const d = Math.sqrt(d2), nx = dx / d, ny = dy / d;
     if (pa === pb) {
       // pieces of one body only knock gently against each other, over a smaller reach: freshly
@@ -1170,6 +1214,7 @@
     let changed = false;
     updateSpawnDrag(dt);
     updateFuses(dt);
+    updateGibs(dt);
     for (const pr of props) if (pr.blood > 0) pr.blood = Math.max(0, pr.blood - dt * 0.01);
     for (const person of people) {
       if (person.dirty) topology(person);
@@ -1255,6 +1300,21 @@
         if (person.fallT > 9) person.fallT = 0.5; // give up this try, rest a bit
       }
       // frozen stiff: no control at all; badly poisoned: too weak to stand
+      // fall asleep after lying still a second; anything going on (or no longer helpless) wakes it
+      const helpless = (person.dead || !person.legsOk) && !heldHere && !person.reform && !person.inflate &&
+        !(person.burning > 0) && !(person.shockT > 0);
+      if (!helpless) { if (person.asleep) wake(person); else person.stillT = 0; }
+      else if (!person.asleep) {
+        // judged on where each part has got to over half a second, so a limb twitching in place
+        // (which a heap of joints can do forever) still counts as lying still
+        person.stillT = (person.stillT || 0) + dt;
+        if (person.stillT >= 0.5) {
+          const now = B.map(b => rowMid(P, b.mid));
+          const moved = person.stillAt && now.some((c, k) => Math.hypot(c[0] - person.stillAt[k][0], c[1] - person.stillAt[k][1]) > 2 * S);
+          if (person.stillAt && !moved) { person.asleep = true; for (const q of P) { q.px = q.x; q.py = q.y; } }
+          person.stillAt = now; person.stillT = 0;
+        }
+      }
       if (person.frozen) {
         // a statue stays up until something knocks it over (or tips it well off balance)
         if (person.statue && (person.ko > 0 || up < 0.75 || heldHere)) person.statue = false;
@@ -1369,14 +1429,27 @@
         const nx = -(ey - sy), ny = ex - sx, L = Math.hypot(nx, ny) || 1, o = k * w / 6;
         ctx.beginPath(); ctx.moveTo(sx + nx / L * o, sy + ny / L * o); ctx.lineTo(ex + nx / L * o, ey + ny / L * o); ctx.stroke();
       }
-      drawSkeleton(bi);
+      if (bi < 3) drawSkeleton(bi);
       for (const o of person.organs) if (o.def.bone === bi) drawOrgan(o);
       ctx.restore();
+      if (bi >= 3) for (const f of bone.frags) {
+        // each piece of a limb carries its own stretch of bone, so a break shows as a break
+        const idx = f.map(k => bone.all[k]).filter(i => !P[i].anchor && !P[i].ghost);
+        if (idx.length < 3) continue;
+        let r0 = Infinity, r1 = -Infinity;
+        for (const i of idx) { r0 = Math.min(r0, P[i].row); r1 = Math.max(r1, P[i].row); }
+        const tf = fitBone(P, person.restPos, idx), n = bone.grid.length - 1;
+        ctx.save();
+        ctx.transform(tf.c, tf.s, -tf.s, tf.c, tf.tx, tf.ty);
+        ctx.translate(ox, oy); ctx.scale(d * S, S);
+        drawSkeleton(bi, Math.max(0, (r0 - 0.4) / n), Math.min(1, (r1 + 0.4) / n));
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
 
-  function drawSkeleton(bi) {
+  function drawSkeleton(bi, t0 = 0, t1 = 1) {
     ctx.fillStyle = '#f4efe2'; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.7;
     if (bi === HEAD) {
       ctx.beginPath(); ctx.ellipse(0.5, -141, 8.5, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();   // skull
@@ -1392,14 +1465,16 @@
       }
       return;
     }
-    const [, [sx, sy], [ex, ey], w] = BONES[bi], bw = Math.max(2, w * 0.3);
-    ctx.lineCap = 'round';
+    const [, [x0, y0], [x1, y1], w] = BONES[bi], bw = Math.max(2, w * 0.3);
+    const sx = x0 + (x1 - x0) * t0, sy = y0 + (y1 - y0) * t0, ex = x0 + (x1 - x0) * t1, ey = y0 + (y1 - y0) * t1;
+    ctx.lineCap = t0 > 0 || t1 < 1 ? 'butt' : 'round';           // a broken end is square, not smooth
     ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
     ctx.lineWidth = bw + 1.2; ctx.strokeStyle = '#000'; ctx.stroke();
     ctx.lineWidth = bw; ctx.strokeStyle = '#f4efe2'; ctx.stroke();
   }
 
-  function drawOrgan(o) {
+  function drawOrgan(o, loose) {
+    if (o.out && !loose) return;
     const { c: [x, y], rx, ry, col, name } = o.def, dead = o.hp <= 0;
     ctx.globalAlpha = dead ? 0.55 : 1;
     ctx.fillStyle = dead ? '#3a0a0e' : col; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.6;
@@ -1428,13 +1503,22 @@
     return c0.map((v, k) => Math.round(v + (c1[k] - v) * t));
   }
 
+  const blotSprites = new Map();
   function blot(x, y, r, [cr, cg, cb], a) {
-    const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, `rgba(${cr},${cg},${cb},${a})`);
-    gr.addColorStop(0.5, `rgba(${cr},${cg},${cb},${a * 0.7})`);
-    gr.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
-    ctx.fillStyle = gr;
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    const k = (cr >> 3) << 10 | (cg >> 3) << 5 | (cb >> 3);       // colours close enough share a sprite
+    let img = blotSprites.get(k);
+    if (!img) {
+      img = document.createElement('canvas'); img.width = img.height = 64;
+      const g = img.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gr.addColorStop(0, `rgba(${cr},${cg},${cb},1)`);
+      gr.addColorStop(0.5, `rgba(${cr},${cg},${cb},0.7)`);
+      gr.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+      blotSprites.set(k, img);
+    }
+    ctx.globalAlpha = Math.min(1, a);
+    ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
+    ctx.globalAlpha = 1;
   }
 
   // the face and the markers sit on top
@@ -1564,6 +1648,7 @@
     drawLightAndSparks();
     drawProps();
     drawWires();
+    drawGibs();
     drawBlasts();
     ctx.fillStyle = BLOOD;
     for (const d of drops) { ctx.fillStyle = d.c || BLOOD; ctx.fillRect(d.x - d.s / 2, d.y - d.s / 2, d.s, d.s); }
@@ -1882,11 +1967,73 @@
   // inside. Stomach or gut burst: their contents poison the body.
   function updateOrgans(person, dt, floor) {
     if (!person.organs) return;
-    const gone = n => person.organs.find(o => o.def.name === n).hp <= 0;
-    person.organDead = person.organs.some(o => o.def.vital && o.hp <= 0);
+    // an organ whose flesh is mostly torn open, and that is itself hurt, slips out
+    for (const o of person.organs) {
+      if (o.out || o.hp >= 0.75 || !o.pts.size) continue;
+      let open = 0;
+      for (const i of o.pts) if (person.pts[i].torn) open++;
+      if (open * 2 >= o.pts.size) ejectOrgan(person, o);
+    }
+    const gone = n => { const o = person.organs.find(o => o.def.name === n); return o.hp <= 0 || o.out; };
+    person.organDead = person.organs.some(o => o.def.vital && (o.hp <= 0 || o.out));
     if (gone('lungs')) person.blood = Math.max(floor, person.blood - dt * 8);
     if (gone('liver')) person.blood = Math.max(floor, person.blood - dt * 3);
     if (gone('stomach') || gone('intestines')) person.poison = Math.min(1.3, (person.poison || 0) + dt * 0.02);
+  }
+
+  // Organs that have come out lie loose in the world: a lump that tumbles and slides to a stop,
+  // or, for the intestines, a limp chain that drapes over the floor.
+  const gibs = [];
+  function ejectOrgan(person, o) {
+    o.out = true;
+    const P = person.pts;
+    let x = 0, y = 0, vx = 0, vy = 0, n = 0;
+    for (const i of o.pts) { const q = P[i]; x += q.x; y += q.y; vx += q.x - q.px; vy += q.y - q.py; n++; }
+    x /= n; y /= n; vx = vx / n / lastH + (Math.random() - 0.5) * 120 * S; vy = vy / n / lastH - 120 * S;
+    const bone = person.bones[o.def.bone], t = bone.body.length >= 3 ? fitBone(P, person.restPos, bone.body) : { c: 1, s: 0 };
+    const g = { o, person, dir: person.buildDir, a: Math.atan2(t.s, t.c), w: (Math.random() - 0.5) * 8, pts: [] };
+    const links = o.def.name === 'intestines' ? 9 : 1;
+    for (let k = 0; k < links; k++) g.pts.push({ x: x + k * 3 * S, y, px: x + k * 3 * S - vx / 60, py: y - vy / 60 });
+    gibs.push(g);
+    if (gibs.length > 60) gibs.shift();
+    spray(x, y, vx * 0.3, vy * 0.3, 8);
+  }
+
+  function updateGibs(dt) {
+    const g2 = GRAV() * dt * dt, floorY = G - 3 * S;
+    for (const g of gibs) {
+      for (const q of g.pts) {
+        const vx = (q.x - q.px) * 0.99, vy = (q.y - q.py) * 0.99;
+        q.px = q.x; q.py = q.y; q.x += vx; q.y += vy + g2;
+        if (q.y > floorY) { q.y = floorY; q.py = q.y + vy * 0.2; q.px = q.x - vx * 0.6; }
+        q.x = Math.max(0, Math.min(W, q.x));
+      }
+      for (let it = 0; it < 3; it++) for (let k = 1; k < g.pts.length; k++) {
+        const A = g.pts[k - 1], B = g.pts[k], dx = B.x - A.x, dy = B.y - A.y, d = Math.hypot(dx, dy) || 1, diff = (d - 3 * S) / d / 2;
+        A.x += dx * diff; A.y += dy * diff; B.x -= dx * diff; B.y -= dy * diff;
+      }
+      const q = g.pts[0];
+      g.w *= q.y >= floorY - 0.5 ? 0.85 : 0.995;
+      g.a += g.w * dt;
+    }
+  }
+
+  function drawGibs() {
+    for (const g of gibs) {
+      if (g.pts.length > 1) {
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); ctx.moveTo(g.pts[0].x, g.pts[0].y);
+        for (const q of g.pts) ctx.lineTo(q.x, q.y);
+        ctx.strokeStyle = '#000'; ctx.lineWidth = 4.2 * S; ctx.stroke();
+        ctx.strokeStyle = g.o.def.col; ctx.lineWidth = 3 * S; ctx.stroke();
+        continue;
+      }
+      const [cx, cy] = g.o.def.c;
+      ctx.save();
+      ctx.translate(g.pts[0].x, g.pts[0].y); ctx.rotate(g.a); ctx.scale(g.dir * S, S); ctx.translate(-cx, -cy);
+      drawOrgan(g.o, true);
+      ctx.restore();
+    }
   }
 
   function updateBurnFrostPoison(person, dt, floor) {
@@ -2077,7 +2224,9 @@
   // (cutWithProp does the cutting).
   function propVsBodies(pr, h, first) {
     const iM = invMass(pr), iI = invInertia(pr);             // a held prop is harder to push about, a machine can't be
+    const moving = Math.hypot(pr.vx, pr.vy) > 20 * S || Math.abs(pr.w) > 0.5 || isHeldProp(pr);
     for (const person of people) {
+      if (person.asleep && !moving) continue;     // a prop resting on a corpse leaves it asleep
       let skewered = skewerOf(pr, person);
       const P = person.pts;
       for (let i = 0; i < P.length; i++) {
@@ -2092,6 +2241,7 @@
           const margin = pr.conductive ? 1.5 * S : 0;
           const hit = surface(pr, p, q.x, q.y, q.r + margin);
           if (!hit) continue;
+          if (person.asleep) wake(person);
           if (pr.conductive) pr.touchP.push(person, i);
           const [cx, cy, nx, ny] = hit, pen = hit[4] - margin;
           if (pen <= 0) continue;
@@ -2222,6 +2372,7 @@
     const soft = isHeldProp(pr) ? 0.2 : 1, iM = soft / pr.m, iI = soft / pr.I;
     for (let s = pr.skew.length - 1; s >= 0; s--) {
       const sk = pr.skew[s], person = sk.person, P = person.pts;
+      if (person.asleep && (isHeldProp(pr) || Math.hypot(pr.vx, pr.vy) > 20 * S)) wake(person);
       if (!people.includes(person)) { pr.skew.splice(s, 1); continue; }
       // thread on each piece the point drives through (whole bones and big pieces, not crumbs);
       // only the point, and only while it is going in: a body later lying along the blade isn't
@@ -2362,6 +2513,7 @@
   }
 
   function shock(person, i) {
+    wake(person);
     person.shockT = 0.15;
     person.shockAt = i;
   }
@@ -2491,6 +2643,7 @@
 
   function explode(x, y) {
     const R = 190 * S;
+    for (const person of people) wake(person);
     blasts.push({ x, y, t: 0, R });
     puff(x, y, 40);
     spray(x, y, 0, -200 * S, 6);
@@ -3561,7 +3714,7 @@
         people.forEach(p => { if (p.brain) p.brain.kill(); });
         hidePanel();
         people.length = 0; held = null; dust.length = 0; drops.length = 0; stains.length = 0; items.length = 0; updateCount();
-        props.length = 0; heldProp = null; wires.length = 0; pendingWire = null;
+        props.length = 0; heldProp = null; wires.length = 0; pendingWire = null; gibs.length = 0;
       });
     }
 
@@ -3720,14 +3873,14 @@
     acc += Math.min(0.1, (now - last) / 1000);
     last = now;
     let n = 0;
-    while (acc >= STEP && n < 3) {
+    while (acc >= STEP && n < 2) {
       const scale = slow ? 0.25 : 1;
       const h = STEP * scale / SUB;
       for (let i = 0; i < SUB; i++) substep(h);
       updateStates(STEP * scale);
       acc -= STEP; n++;
     }
-    if (n === 3) acc = 0;
+    if (n === 2) acc = 0;                 // behind: drop the backlog instead of racing to catch up
     draw();
     requestAnimationFrame(frame);
   }
