@@ -3611,7 +3611,7 @@
     S = Math.max(0.62, Math.min(1.25, VH / 640));
     buildPropsPanel();
     if (matchMedia('(pointer: coarse)').matches) {
-      document.getElementById('hint').textContent = 'Press and hold: add people, food, a fly brain · drag to lift · drag empty space to look around, pinch to zoom';
+      document.getElementById('hint').textContent = 'Press and hold for people & food · pinch to zoom · drag empty space to look around';
     }
     window.addEventListener('resize', () => { closeMenu(); resize(); });
     requestAnimationFrame(t => { last = t; frame(t); });
