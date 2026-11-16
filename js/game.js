@@ -15,7 +15,7 @@
   const drops = [];  // flying blood
   const stains = []; // blood on the floor
   let slow = false;
-  const MAX_PEOPLE = 12;
+  const MAX_PEOPLE = 8;
   const BLOOD = '#c8102e';
 
   // ---------- body plan ----------
@@ -55,6 +55,15 @@
     [9, 10, [1, -100], -2.6,  0.03, -0.2,   'arm',  10, 0.7],
   ];
   const NECK = 0, WAIST = 1, LEG_JOINTS = [2, 3, 4, 5];
+  // name, bone, centre, half width, half height, colour, what losing it does
+  const ORGANS = [
+    { name: 'brain',      bone: 0, c: [1, -141.5], rx: 6.5, ry: 6,   col: '#e9a3b6', vital: true },
+    { name: 'lungs',      bone: 1, c: [-1, -115],  rx: 6.5, ry: 10,  col: '#f0a5a5' },
+    { name: 'heart',      bone: 1, c: [3, -110],   rx: 3.6, ry: 4.2, col: '#a3122a', vital: true },
+    { name: 'liver',      bone: 2, c: [1.5, -93],  rx: 7,   ry: 3.6, col: '#6e1a1f' },
+    { name: 'stomach',    bone: 2, c: [-1.5, -86], rx: 5,   ry: 3.8, col: '#d9777c' },
+    { name: 'intestines', bone: 2, c: [0, -75],    rx: 7.5, ry: 6.5, col: '#d98a8a' },
+  ];
   const MUSCLE = { core: 0.14, leg: 0.12, arm: 0.035 };
 
   const key = (a, b) => a < b ? a * 1024 + b : b * 1024 + a;
@@ -182,7 +191,13 @@
       links: bonds.filter(b => b.kind !== 'in'), jointBonds: joints.map(j => j.bond),
       ko: 0, fallT: 0, blood: 100, dead: false, dirty: true,
       ctrl: onFloor ? 1 : 0, standing: onFloor, standX: x, grounded: onFloor, legsOk: true, nBroken: 0, regen: false, regenT: 0,
-      posture: 'stand', walkV: 0, gait: 0, rubT: 0 };
+      posture: 'stand', walkV: 0, gait: 0, rubT: 0, origin: [x, feetY], buildDir: dir, organDead: false };
+    // each organ is hurt through the particles of flesh around it
+    p.organs = ORGANS.map(o => {
+      const cx = x + o.c[0] * dir * S, cy = feetY + o.c[1] * S, reach = (Math.max(o.rx, o.ry) + 3) * S;
+      const near = bones[o.bone].all.filter(i => !pts[i].anchor && Math.hypot(pts[i].x - cx, pts[i].y - cy) < reach);
+      return { def: o, hp: 1, pts: new Set(near) };
+    });
     for (const j of joints) j.rel0 = Math.abs(rawAngle(p, j, false)) > Math.PI / 2 ? Math.PI : 0;
     return p;
   }
@@ -370,6 +385,8 @@
       bone.orig = bone.rest.map(r => r.slice());
     });
     if (regrew) person.inflate = { t: 0, dur: 0.9 };
+    for (const o of person.organs || []) o.hp = 1;
+    person.organDead = false;
     for (const b of person.bonds) { b.broken = false; b.hp = 1; b.L = b.L0; }
     // a limb that grew back into the floor or a wall lifts the body clear instead of tearing again
     let up = 0, left = 0, right = 0;
@@ -647,6 +664,7 @@
         if (o.kind === 'in') for (const b2 of person.pts[other].bonds) damage(person, b2, d * 0.35);
       }
       if (d > 0.4) spray(x, y, 0, -100 * S, Math.min(8, Math.round(d * 4)));
+      hurtOrgans(person, i, d * 0.45);
     }
   }
 
@@ -664,9 +682,18 @@
     if (b.hp <= 0) breakBond(person, bi);
   }
 
+  function hurtOrgans(person, i, d) {
+    for (const o of person.organs || []) {
+      if (!o.pts.has(i) || o.hp <= 0) continue;
+      o.hp = Math.max(0, o.hp - d);
+      if (o.hp === 0) { const q = person.pts[i]; spray(q.x, q.y, 0, -80 * S, 10); }
+    }
+  }
+
   function breakBond(person, bi) {
     const b = person.bonds[bi], P = person.pts;
     if (b.broken) return;
+    if (b.kind !== 'anchor') { hurtOrgans(person, b.a, 0.3); hurtOrgans(person, b.b, 0.3); }
     b.broken = true;
     person.dirty = true;
     person.nBroken++;
@@ -1182,9 +1209,10 @@
         }
       }
       updateBurnFrostPoison(person, dt, floor);
+      updateOrgans(person, dt, floor);
       updateShock(person, dt, floor);
       if (person.immortal && person.dead) { person.dead = false; changed = true; }
-      if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0 || person.heartStopped)) {
+      if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0 || person.heartStopped || person.organDead)) {
         person.dead = true; changed = true;
       }
 
@@ -1303,8 +1331,91 @@
       if (q.fresh > 0.02) blot(q.x, q.y, 11 * S, [200, 16, 46], q.fresh * 0.85);
       if (q.stain > 0.05) blot(q.x, q.y, 8 * S, [200, 16, 46], Math.min(1, q.stain) * 0.8);
     }
+    drawInside(person, list);
     ctx.restore();
     for (const bi of list) drawMarks(person, bi);
+  }
+
+  // Under the skin, seen only through wounds: muscle, then bone (skull, spine and ribs, limb
+  // bones), then the organs, each drawn in its bone's frame so it moves and turns with it.
+  // shortcut: organs keep the side the body was built facing; mirror them on turnaround if it shows.
+  function drawInside(person, list) {
+    const P = person.pts, holes = new Path2D();
+    let any = false;
+    for (const bi of list) for (const i of person.bones[bi].all) {
+      const q = P[i];
+      if (q.anchor || q.ghost || !q.torn) continue;
+      const r = 5.5 * S;
+      holes.moveTo(q.x + r, q.y); holes.arc(q.x, q.y, r, 0, Math.PI * 2);
+      any = true;
+    }
+    if (!any) return;
+    ctx.save();
+    ctx.clip(holes);
+    ctx.fillStyle = '#7d1020';                                   // muscle
+    ctx.fill(holes);
+    const [ox, oy] = person.origin, d = person.buildDir;
+    for (const bi of list) {
+      const bone = person.bones[bi];
+      if (bone.ghost || bone.body.length < 3) continue;
+      const t = fitBone(P, person.restPos, bone.body);
+      ctx.save();
+      ctx.transform(t.c, t.s, -t.s, t.c, t.tx, t.ty);
+      ctx.translate(ox, oy); ctx.scale(d * S, S);                 // now in body-plan units
+      ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      // muscle fibres along the bone
+      const [, [sx, sy], [ex, ey], w] = BONES[bi];
+      for (let k = -2; k <= 2; k++) {
+        const nx = -(ey - sy), ny = ex - sx, L = Math.hypot(nx, ny) || 1, o = k * w / 6;
+        ctx.beginPath(); ctx.moveTo(sx + nx / L * o, sy + ny / L * o); ctx.lineTo(ex + nx / L * o, ey + ny / L * o); ctx.stroke();
+      }
+      drawSkeleton(bi);
+      for (const o of person.organs) if (o.def.bone === bi) drawOrgan(o);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawSkeleton(bi) {
+    ctx.fillStyle = '#f4efe2'; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.7;
+    if (bi === HEAD) {
+      ctx.beginPath(); ctx.ellipse(0.5, -141, 8.5, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();   // skull
+      return;
+    }
+    if (bi === CHEST || bi === BELLY) {
+      ctx.fillRect(-7.5, bi === CHEST ? -128 : -98, 2.6, 30);                                         // spine
+      for (let y = bi === CHEST ? -125 : -96; y < (bi === CHEST ? -98 : -88); y += 1.5) ctx.fillRect(-7.4, y, 2.4, 0.5);
+      if (bi === CHEST) for (let y = -124; y < -100; y += 4) {                                        // ribs
+        ctx.beginPath(); ctx.moveTo(-6, y); ctx.quadraticCurveTo(6, y - 1, 8, y + 4);
+        ctx.lineWidth = 1.6; ctx.strokeStyle = '#f4efe2'; ctx.stroke();
+        ctx.lineWidth = 0.4; ctx.strokeStyle = '#000'; ctx.stroke();
+      }
+      return;
+    }
+    const [, [sx, sy], [ex, ey], w] = BONES[bi], bw = Math.max(2, w * 0.3);
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
+    ctx.lineWidth = bw + 1.2; ctx.strokeStyle = '#000'; ctx.stroke();
+    ctx.lineWidth = bw; ctx.strokeStyle = '#f4efe2'; ctx.stroke();
+  }
+
+  function drawOrgan(o) {
+    const { c: [x, y], rx, ry, col, name } = o.def, dead = o.hp <= 0;
+    ctx.globalAlpha = dead ? 0.55 : 1;
+    ctx.fillStyle = dead ? '#3a0a0e' : col; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    if (name === 'heart') {
+      ctx.moveTo(x, y + ry); ctx.bezierCurveTo(x - rx * 1.6, y, x - rx, y - ry * 1.2, x, y - ry * 0.4);
+      ctx.bezierCurveTo(x + rx, y - ry * 1.2, x + rx * 1.6, y, x, y + ry);
+    } else ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    if (name === 'brain') for (let k = -2; k <= 2; k++) { ctx.moveTo(x - rx * 0.8, y + k * 2); ctx.quadraticCurveTo(x, y + k * 2 - 1.5, x + rx * 0.8, y + k * 2); }
+    if (name === 'intestines') for (let k = 0; k < 4; k++) ctx.arc(x + (k % 2 ? 2.5 : -2.5), y - 4 + k * 2.6, 2.2, 0, Math.PI * 2);
+    if (name === 'lungs') { ctx.moveTo(x, y - ry * 0.7); ctx.lineTo(x, y + ry * 0.6); }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   // bruise colour: purple when light, red when bad, near-black red when worst
@@ -1767,6 +1878,17 @@
   // Burning spreads from particle to particle, chars the skin black, weakens
   // it, and costs blood and hurts; frost thaws slowly; a body mostly frozen is frozen solid;
   // poison drains blood, makes the body shake and turn a sickly colour, and weakens it.
+  // brain or heart gone: dead. Lungs gone: no air, the blood runs out fast. Liver: it bleeds
+  // inside. Stomach or gut burst: their contents poison the body.
+  function updateOrgans(person, dt, floor) {
+    if (!person.organs) return;
+    const gone = n => person.organs.find(o => o.def.name === n).hp <= 0;
+    person.organDead = person.organs.some(o => o.def.vital && o.hp <= 0);
+    if (gone('lungs')) person.blood = Math.max(floor, person.blood - dt * 8);
+    if (gone('liver')) person.blood = Math.max(floor, person.blood - dt * 3);
+    if (gone('stomach') || gone('intestines')) person.poison = Math.min(1.3, (person.poison || 0) + dt * 0.02);
+  }
+
   function updateBurnFrostPoison(person, dt, floor) {
     const P = person.pts;
     let burning = 0, frost = 0, n = 0, hot = -1;
@@ -2080,7 +2202,8 @@
   function stab(pr, person, i, speed) {
     const q = person.pts[i];
     pr.skew.push({ person, reps: [i] });
-    q.wound = 1; q.hurt = Math.max(q.hurt, 0.8);
+    q.wound = 1; q.hurt = Math.max(q.hurt, 0.8); q.torn = true;
+    hurtOrgans(person, i, 0.7);
     pr.blood = Math.min(1, pr.blood + 0.4);
     spray(q.x, q.y, pr.vx * 0.2, pr.vy * 0.2, 6);
     if (person.mind) feel(person, i, speed, q.x);
@@ -2114,6 +2237,8 @@
         // a short blade can only go through so much: a knife holds one part, a sword about three
         if (sk.reps.length >= Math.max(1, Math.round(L / (22 * S)))) continue;
         sk.reps.push(i);
+        q.torn = true;
+        hurtOrgans(person, i, 0.7);
         q.wound = 1; q.hurt = Math.max(q.hurt, 0.7); q.stain = 1;
         pr.blood = Math.min(1, pr.blood + 0.25);
       }
@@ -3371,6 +3496,8 @@
       const torn = person.joints.filter(j => !j.active).length;
       heading(person.dead ? 'Person · dead'
         : 'Person · blood ' + Math.round(person.blood) + '%' + (torn ? ' · torn in ' + torn + (torn === 1 ? ' place' : ' places') : '') + (person.immortal ? ' · immortal' : ''));
+      const lost = (person.organs || []).filter(o => o.hp <= 0).map(o => o.def.name);
+      if (lost.length) heading('Destroyed: ' + lost.join(', '));
       add('Heal', () => heal(person));
       add('Keep healing', () => { person.regen = !person.regen; }, person.regen ? 'on' : 'off');
       add('Immortal (no healing)', () => { person.immortal = !person.immortal; }, person.immortal ? 'on' : 'off');
@@ -3608,7 +3735,7 @@
   function start() {
     resize();
     makeWorld();
-    S = Math.max(0.62, Math.min(1.25, VH / 640));
+    S = 1.4 * Math.max(0.62, Math.min(1.25, VH / 640));   // people drawn large enough to see inside
     buildPropsPanel();
     if (matchMedia('(pointer: coarse)').matches) {
       document.getElementById('hint').textContent = 'Press and hold for people & food · pinch to zoom · drag empty space to look around';

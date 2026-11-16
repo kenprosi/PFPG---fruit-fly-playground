@@ -51,6 +51,8 @@ The **Items** button opens the items panel, sorted into tabs: Weapons, Heavy, Ha
 
 ### Bodies
 
+Under the skin each body has muscle, bones (skull, spine and ribs, limb bones) and organs: brain, lungs, heart, liver, stomach and intestines. They show wherever the body is torn, cut or stabbed open. Organs take damage through the flesh around them: losing the brain or heart kills, lost lungs drain the blood fast, a ruptured liver bleeds, and a burst stomach or gut poisons the body. Healing restores them.
+
 Each body part is a lattice of about 15–24 small particles stuck together. The middle is bone (tough), the outside flesh (brittle), and each part is split at random into lumps of about five particles. Hit hard, the seams between lumps crack, cracks spread, and the part breaks into pieces; each piece keeps its own shape and collides as a thing of its own. A bone with a little flesh chipped off still works; a bone broken in two stops the joints on it working.
 
 ## How the brain is built
