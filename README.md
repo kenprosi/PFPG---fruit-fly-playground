@@ -51,6 +51,8 @@ The **Items** button opens the items panel, sorted into tabs: Weapons, Heavy, Ha
 
 ### Bodies
 
+Gore works the way Happy Wheels does it: a severed limb or head leaves stumps that pump jets of blood in time with the heartbeat, fading over a few seconds (faster once the heart stops). Blood sticks to whatever it lands on: skin, items (the splashes move with them) and the walls, where it runs down. People in pain screw their eyes shut and scream.
+
 Under the skin each body has muscle, bones (skull, spine and ribs, limb bones) and organs: brain, lungs, heart, liver, stomach and intestines. They show wherever the body is torn, cut or stabbed open. Organs take damage through the flesh around them: losing the brain or heart kills, lost lungs drain the blood fast, a ruptured liver bleeds, and a burst stomach or gut poisons the body. Healing restores them. Torn open far enough, a hurt organ falls out and lies on the floor (the intestines as a limp chain).
 
 Limb bones break: a hard blow or a bad landing snaps the bone where it lands, the limb bends at the break, held only by the flesh, and a broken leg can't be stood on. Through an open wound the two ends of the bone show.

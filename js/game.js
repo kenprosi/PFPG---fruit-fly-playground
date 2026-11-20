@@ -14,6 +14,7 @@
   const dust = [];
   const drops = [];  // flying blood
   const stains = []; // blood on the floor
+  const wallStains = []; // blood running down the walls
   let slow = false;
   const MAX_PEOPLE = 8;
   const BLOOD = '#c8102e';
@@ -390,6 +391,7 @@
     for (const o of person.organs || []) { o.hp = 1; o.out = false; }
     for (let k = gibs.length - 1; k >= 0; k--) if (gibs[k].person === person) gibs.splice(k, 1);
     person.organDead = false;
+    person.stumps = [];
     for (const b of person.bonds) { b.broken = false; b.hp = 1; b.L = b.L0; }
     // a limb that grew back into the floor or a wall lifts the body clear instead of tearing again
     let up = 0, left = 0, right = 0;
@@ -670,6 +672,7 @@
     }
     // every hit past a firm knock bruises: light hits go purple, heavier ones red, then near black
     if (speed > 700 * S) {
+      person.painT = Math.max(person.painT || 0, Math.min(2.5, speed / (1200 * S)));
       const add = (speed - 700 * S) / (3000 * S);
       q.hurt = Math.min(1.2, q.hurt + add);
       for (const bi of q.bonds) {
@@ -736,6 +739,12 @@
     }
     const vx = ((A.x - A.px) + (B.x - B.px)) / 2 / lastH, vy = ((A.y - A.py) + (B.y - B.py)) / 2 / lastH;
     spray((A.x + B.x) / 2, (A.y + B.y) / 2, vx * 0.3, vy * 0.3, b.kind === 'joint' ? 16 : Math.random() < 0.4 ? 1 : 0);
+    person.painT = Math.max(person.painT || 0, b.kind === 'joint' ? 3 : 1.2);
+    if (b.kind === 'joint') {
+      // both ends of a severed joint pump blood out in jets; a severed neck most of all
+      const j = person.joints[b.joint], power = b.joint === NECK ? 1.7 : b.joint === WAIST ? 1.3 : 1;
+      (person.stumps || (person.stumps = [])).push({ a: j.aP, bone: j.p, t: 0, power, acc: 0 }, { a: j.aC, bone: j.c, t: 0, power, acc: 0 });
+    }
     // a crack runs on: the bonds next to a broken one take some of its load, a little at random,
     // so pieces break off along ragged lines
     if (b.kind === 'in' && crackDepth < 3) {
@@ -1255,6 +1264,9 @@
       }
       updateBurnFrostPoison(person, dt, floor);
       updateOrgans(person, dt, floor);
+      updateStumps(person, dt, floor);
+      if (person.painT > 0) person.painT -= dt;
+      if (person.burning > 0.02 || person.shockT > 0) person.painT = Math.max(person.painT || 0, 0.5);
       updateShock(person, dt, floor);
       if (person.immortal && person.dead) { person.dead = false; changed = true; }
       if (!person.dead && !person.immortal && (!J[NECK].active || !J[WAIST].active || person.blood <= 0 || person.heartStopped || person.organDead)) {
@@ -1335,16 +1347,44 @@
       d.x += d.vx * dt; d.y = Math.min(G - 1, d.y + d.vy * dt);
       if (d.life <= 0) dust.splice(i, 1);
     }
+    const cell = 10 * S;
     for (let i = drops.length - 1; i >= 0; i--) {
       const d = drops[i];
       d.vy += 1700 * S * dt;
       d.x += d.vx * dt; d.y += d.vy * dt;
+      d.age = (d.age || 0) + dt;
       if (d.y >= G) {
         stains.push({ x: d.x, w: d.s * (1.5 + Math.random() * 2.5), c: d.c });
         if (stains.length > 900) stains.shift();
         drops.splice(i, 1);
-      } else if (d.x < 0 || d.x > W) drops.splice(i, 1);
+        continue;
+      }
+      if (d.x < 0 || d.x > W) {
+        // it hits a wall and runs down it
+        wallStains.push({ x: d.x < 0 ? 0 : W, y: d.y, w: d.s * 1.6, run: 0, max: (4 + Math.random() * 18) * S, c: d.c });
+        if (wallStains.length > 400) wallStains.shift();
+        drops.splice(i, 1);
+        continue;
+      }
+      if (d.age < 0.08) continue;                 // leaving the wound, not landing on it
+      // onto a body: it stains the skin there
+      const arr = grid.get((Math.floor(d.x / cell) + 4000) * 16384 + (Math.floor(d.y / cell) + 8000));
+      let stuck = false;
+      if (arr) for (let a = 0; a < arr.length && !stuck; a += 2) {
+        const q = people[arr[a]] && people[arr[a]].pts[arr[a + 1]];
+        if (q && Math.hypot(q.x - d.x, q.y - d.y) < q.r + S) { q.stain = Math.min(1, q.stain + 0.2); stuck = true; }
+      }
+      // onto an item: a splash that stays on it and moves with it
+      if (!stuck) for (const pr of props) {
+        if (pr.ghost || Math.hypot(pr.x - d.x, pr.y - d.y) > pr.R + 2 * S) continue;
+        if (!pr.parts.some(pp => surface(pr, pp, d.x, d.y, S))) continue;
+        (pr.splats || (pr.splats = [])).push(propLocal(pr, d.x, d.y));
+        if (pr.splats.length > 40) pr.splats.shift();
+        stuck = true; break;
+      }
+      if (stuck) drops.splice(i, 1);
     }
+    for (const w of wallStains) if (w.run < w.max) w.run += dt * 6 * S;
   }
 
   // ---------- drawing ----------
@@ -1556,6 +1596,16 @@
       ctx.beginPath();
       ctx.moveTo(ex - s, ey - s); ctx.lineTo(ex + s, ey + s); ctx.moveTo(ex + s, ey - s); ctx.lineTo(ex - s, ey + s);
       ctx.stroke();
+    } else if (person.painT > 0) {
+      // in pain: eyes screwed shut and the mouth wide open, as long as it hurts
+      const s = 1.8 * S, k = Math.min(1, person.painT / 1.5);
+      ctx.lineWidth = 1.4 * S; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(ex - s * ux - s * fx, ey - s * uy - s * fy); ctx.lineTo(ex, ey); ctx.lineTo(ex - s * ux + s * fx, ey - s * uy + s * fy);
+      ctx.stroke();
+      const mx = ex - ux * 5.5 * S + fx * 0.5 * S, my = ey - uy * 5.5 * S + fy * 0.5 * S;
+      ctx.beginPath(); ctx.ellipse(mx, my, (1.2 + 1.3 * k) * S, (0.9 + 2 * k) * S, Math.atan2(uy, ux), 0, Math.PI * 2);
+      ctx.fill();
     } else {
       ctx.fillRect(ex - 1.3 * S, ey - 1.8 * S, 2.6 * S, 3.6 * S);
     }
@@ -1628,6 +1678,12 @@
     }
     ctx.fillStyle = BLOOD;
     for (const s of stains) { ctx.fillStyle = s.c || BLOOD; ctx.fillRect(s.x - s.w / 2, G - 1.5 * S, s.w, 3 * S); }
+    for (const w of wallStains) {
+      ctx.fillStyle = w.c || BLOOD;
+      const x = w.x === 0 ? 0 : W - 2.5 * S;
+      ctx.fillRect(x, w.y - w.w / 2, 2.5 * S, w.w);
+      ctx.fillRect(x + 0.5 * S, w.y, 1.4 * S, w.run);            // the drip running down
+    }
   }
 
   function draw() {
@@ -1651,7 +1707,12 @@
     drawGibs();
     drawBlasts();
     ctx.fillStyle = BLOOD;
-    for (const d of drops) { ctx.fillStyle = d.c || BLOOD; ctx.fillRect(d.x - d.s / 2, d.y - d.s / 2, d.s, d.s); }
+    // drops drawn as short streaks along their flight, so a jet reads as a stream
+    ctx.lineCap = 'round';
+    for (const d of drops) {
+      ctx.strokeStyle = d.c || BLOOD; ctx.lineWidth = d.s;
+      ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - d.vx * 0.012, d.y - d.vy * 0.012); ctx.stroke();
+    }
     drawMindLabels();
     if (held) {
       const q = held.person.pts[held.idx];
@@ -1979,6 +2040,32 @@
     if (gone('lungs')) person.blood = Math.max(floor, person.blood - dt * 8);
     if (gone('liver')) person.blood = Math.max(floor, person.blood - dt * 3);
     if (gone('stomach') || gone('intestines')) person.poison = Math.min(1.3, (person.poison || 0) + dt * 0.02);
+  }
+
+  // Arterial spurting, as in Happy Wheels: each stump pulses a jet of blood outward along its
+  // limb in time with the heartbeat, strong at first, dying away over several seconds (faster
+  // once the heart has stopped), and every jet costs blood.
+  function updateStumps(person, dt, floor) {
+    if (!person.stumps || !person.stumps.length) return;
+    const P = person.pts;
+    for (let k = person.stumps.length - 1; k >= 0; k--) {
+      const st = person.stumps[k], q = P[st.a], bone = person.bones[st.bone];
+      st.t += dt;
+      const str = st.power * Math.exp(-st.t / (person.dead ? 1.5 : 5)) * (person.blood > 1 || person.immortal ? 1 : 0);
+      if (str < 0.05 || q.ghost || bone.ghost) { person.stumps.splice(k, 1); continue; }
+      let cx = 0, cy = 0;
+      for (const i of bone.body) { cx += P[i].x; cy += P[i].y; }
+      cx /= bone.body.length; cy /= bone.body.length;
+      const dx = q.x - cx, dy = q.y - cy, L = Math.hypot(dx, dy) || 1;
+      const beat = 0.5 + 0.5 * Math.sin(st.t * Math.PI * 2 * 1.6);
+      st.acc += dt * 70 * str * beat * beat;
+      for (; st.acc >= 1 && drops.length < 1600; st.acc--) {
+        const sp = (220 + 420 * beat) * S * Math.min(1.4, str), wob = (Math.random() - 0.5) * 0.35;
+        drops.push({ x: q.x, y: q.y, vx: (dx / L + wob * -dy / L) * sp + (q.x - q.px) / lastH, vy: (dy / L + wob * dx / L) * sp + (q.y - q.py) / lastH,
+          s: (1.2 + Math.random() * 1.6) * S, age: 0 });
+      }
+      person.blood = Math.max(floor, person.blood - dt * 1.8 * str);
+    }
   }
 
   // Organs that have come out lie loose in the world: a lump that tumbles and slides to a stop,
@@ -2788,6 +2875,10 @@
       g.fillStyle = '#fff'; g.fill();
       if (pr.blood > 0.02) { g.fillStyle = `rgba(200,16,46,${Math.min(0.85, pr.blood)})`; g.fill(); }
       g.strokeStyle = '#000'; g.lineWidth = ow; g.stroke();
+    }
+    if (pr.splats && g === ctx) {
+      g.fillStyle = BLOOD;
+      for (const [lx, ly] of pr.splats) { const [x, y] = propPoint(pr, lx, ly); g.beginPath(); g.arc(x, y, 1.4 * S, 0, Math.PI * 2); g.fill(); }
     }
     g.restore();
   }
@@ -3714,7 +3805,7 @@
         people.forEach(p => { if (p.brain) p.brain.kill(); });
         hidePanel();
         people.length = 0; held = null; dust.length = 0; drops.length = 0; stains.length = 0; items.length = 0; updateCount();
-        props.length = 0; heldProp = null; wires.length = 0; pendingWire = null; gibs.length = 0;
+        props.length = 0; heldProp = null; wires.length = 0; pendingWire = null; gibs.length = 0; wallStains.length = 0;
       });
     }
 
